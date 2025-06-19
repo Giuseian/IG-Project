@@ -4,9 +4,9 @@ let animationRunning = true;
 let time = 0;
 
 // Camera controls
-let cameraDistance = 10;
-let cameraAngleX = 0.2;
-let cameraAngleY = 0.0;
+let cameraDistance = 8;
+let cameraAngleX = 0.0; // Start level
+let cameraAngleY = 0.0; // Start facing forward
 let isDragging = false;
 let lastMouseX = 0;
 let lastMouseY = 0;
@@ -396,6 +396,7 @@ function setupControls() {
         isDragging = true;
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
+        canvas.style.cursor = 'grabbing';
         console.log('Mouse down - starting drag');
     });
     
@@ -404,10 +405,14 @@ function setupControls() {
             const deltaX = e.clientX - lastMouseX;
             const deltaY = e.clientY - lastMouseY;
             
-            cameraAngleY += deltaX * 0.01;
-            cameraAngleX += deltaY * 0.01;
+            // Horizontal rotation (left/right mouse movement)
+            cameraAngleY -= deltaX * 0.01; // Negative for natural rotation
             
-            cameraAngleX = Math.max(-Math.PI/2, Math.min(Math.PI/2, cameraAngleX));
+            // Vertical rotation (up/down mouse movement)
+            cameraAngleX -= deltaY * 0.01; // Negative for natural rotation
+            
+            // Clamp vertical rotation to prevent flipping
+            cameraAngleX = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, cameraAngleX));
             
             lastMouseX = e.clientX;
             lastMouseY = e.clientY;
@@ -416,13 +421,24 @@ function setupControls() {
     
     canvas.addEventListener('mouseup', () => {
         isDragging = false;
+        canvas.style.cursor = 'grab';
+        console.log('Mouse up - stopped dragging');
+    });
+    
+    canvas.addEventListener('mouseleave', () => {
+        isDragging = false;
+        canvas.style.cursor = 'grab';
     });
     
     canvas.addEventListener('wheel', (e) => {
         e.preventDefault();
         cameraDistance += e.deltaY * 0.01;
-        cameraDistance = Math.max(3, Math.min(20, cameraDistance));
+        cameraDistance = Math.max(2, Math.min(20, cameraDistance));
+        console.log('Zoom:', cameraDistance);
     });
+    
+    // Set initial cursor
+    canvas.style.cursor = 'grab';
 }
 
 function resizeCanvas() {
@@ -435,7 +451,7 @@ function updateCamera() {
     const projectionMatrix = createMatrix4();
     const viewMatrix = createMatrix4();
     
-    // Simple perspective
+    // Perspective matrix
     const aspect = canvas.width / canvas.height;
     const fov = 45 * Math.PI / 180;
     const near = 0.1;
@@ -452,15 +468,64 @@ function updateCamera() {
     projectionMatrix[14] = near * far * rangeInv * 2;
     projectionMatrix[15] = 0;
     
-    // Simple view matrix - orbit camera
+    // Proper orbit camera - calculate camera position
     const cameraX = Math.cos(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
     const cameraY = Math.sin(cameraAngleX) * cameraDistance;
     const cameraZ = Math.sin(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
     
+    // Target point (where we're looking)
+    const targetX = 0;
+    const targetY = 0;
+    const targetZ = 0;
+    
+    // Calculate look direction
+    const lookX = targetX - cameraX;
+    const lookY = targetY - cameraY;
+    const lookZ = targetZ - cameraZ;
+    
+    // Normalize look direction
+    const lookLength = Math.sqrt(lookX * lookX + lookY * lookY + lookZ * lookZ);
+    const lookXNorm = lookX / lookLength;
+    const lookYNorm = lookY / lookLength;
+    const lookZNorm = lookZ / lookLength;
+    
+    // Up vector
+    const upX = 0, upY = 1, upZ = 0;
+    
+    // Right vector (cross product of look and up)
+    const rightX = lookYNorm * upZ - lookZNorm * upY;
+    const rightY = lookZNorm * upX - lookXNorm * upZ;
+    const rightZ = lookXNorm * upY - lookYNorm * upX;
+    
+    // Recalculate up vector (cross product of right and look)
+    const upXNew = rightY * lookZNorm - rightZ * lookYNorm;
+    const upYNew = rightZ * lookXNorm - rightX * lookZNorm;
+    const upZNew = rightX * lookYNorm - rightY * lookXNorm;
+    
+    // Build view matrix
     identity(viewMatrix);
-    viewMatrix[12] = -cameraX;
-    viewMatrix[13] = -cameraY;
-    viewMatrix[14] = -cameraZ;
+    
+    // Rotation part
+    viewMatrix[0] = rightX;
+    viewMatrix[1] = upXNew;
+    viewMatrix[2] = -lookXNorm;
+    viewMatrix[3] = 0;
+    
+    viewMatrix[4] = rightY;
+    viewMatrix[5] = upYNew;
+    viewMatrix[6] = -lookYNorm;
+    viewMatrix[7] = 0;
+    
+    viewMatrix[8] = rightZ;
+    viewMatrix[9] = upZNew;
+    viewMatrix[10] = -lookZNorm;
+    viewMatrix[11] = 0;
+    
+    // Translation part
+    viewMatrix[12] = -(rightX * cameraX + rightY * cameraY + rightZ * cameraZ);
+    viewMatrix[13] = -(upXNew * cameraX + upYNew * cameraY + upZNew * cameraZ);
+    viewMatrix[14] = -(-lookXNorm * cameraX + -lookYNorm * cameraY + -lookZNorm * cameraZ);
+    viewMatrix[15] = 1;
     
     gl.uniformMatrix4fv(gl.getUniformLocation(program, 'u_viewMatrix'), false, viewMatrix);
     gl.uniformMatrix4fv(gl.getUniformLocation(program, 'u_projectionMatrix'), false, projectionMatrix);
@@ -489,8 +554,8 @@ function toggleAnimation() {
 }
 
 function resetCamera() {
-    cameraDistance = 10;
-    cameraAngleX = 0.2;
+    cameraDistance = 8;
+    cameraAngleX = 0.0;
     cameraAngleY = 0.0;
     console.log('Camera reset');
 }
