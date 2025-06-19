@@ -5,77 +5,81 @@ let positionBuffer, normalBuffer, indexBuffer;
 let aPositionLoc, aNormalLoc, uModelLoc, uViewLoc, uProjectionLoc, uColorLoc, uLightDirLoc;
 
 let time = 0;
-let cameraAngle = 0; // Manual camera control instead of auto-rotation
+let cameraAngle = 0;
 
-const legs = [];
-const legLength1 = 0.5;  // Longer upper leg
-const legLength2 = 0.4;  // Lower leg
+const robot = {
+  body: {
+    position: [0, 0, 0],
+    width: 1.0,
+    height: 0.15,
+    depth: 0.4
+  },
+  legs: []
+};
 
-// Leg attachment points ON the robot body edges
-const baseOffsets = [
-  // Left side legs (attached to body edge)
-  [-0.6, 0.15,  0.3],  // Left front
-  [-0.6, 0.15,  0.0],  // Left middle  
-  [-0.6, 0.15, -0.3],  // Left back
-  // Right side legs (attached to body edge)
-  [ 0.6, 0.15,  0.3],  // Right front
-  [ 0.6, 0.15,  0.0],  // Right middle
-  [ 0.6, 0.15, -0.3],  // Right back
-];
 
-// Initialize legs with realistic positioning
-for (let i = 0; i < 6; i++) {
-  legs.push({
-    base: baseOffsets[i],
-    len1: legLength1,
-    len2: legLength2,
-    joint1: [0, 0, 0],
-    foot: [baseOffsets[i][0] * 1.8, -0.6, baseOffsets[i][2] * 1.5], // Initial foot position
-    phase: (i % 2) * Math.PI, // Alternating phases for tripod gait
-    group: i % 2, // 0 or 1 for tripod gait groups
-  });
-}
-
-// Geometry generators (same as before)
-function createCylinder(radius, height, segments = 12) {
-  const vertices = [];
-  const normals = [];
-  const indices = [];
+// Create 6 legs attached to the robot body
+function initializeRobot() {
+  // Hip positions exactly on the body edges
+  const bodyHalfWidth = robot.body.width / 2;
+  const bodyHalfDepth = robot.body.depth / 2;
+  const hipHeight = robot.body.height / 2;
   
-  for (let i = 0; i <= segments; i++) {
-    const angle = (i / segments) * Math.PI * 2;
-    const x = Math.cos(angle) * radius;
-    const z = Math.sin(angle) * radius;
+  const legConfigs = [
+    // Left side legs (x = -bodyHalfWidth)
+    { side: 'left', position: [-bodyHalfWidth, hipHeight, bodyHalfDepth * 0.8] },    // Front
+    { side: 'left', position: [-bodyHalfWidth, hipHeight, 0] },                     // Middle
+    { side: 'left', position: [-bodyHalfWidth, hipHeight, -bodyHalfDepth * 0.8] },  // Back
+    // Right side legs (x = +bodyHalfWidth)  
+    { side: 'right', position: [bodyHalfWidth, hipHeight, bodyHalfDepth * 0.8] },   // Front
+    { side: 'right', position: [bodyHalfWidth, hipHeight, 0] },                     // Middle
+    { side: 'right', position: [bodyHalfWidth, hipHeight, -bodyHalfDepth * 0.8] },  // Back
+  ];
+  
+  robot.legs = [];
+  
+  for (let i = 0; i < 6; i++) {
+    const config = legConfigs[i];
+    const sideMultiplier = config.side === 'left' ? -1 : 1;
     
-    vertices.push(x, 0, z);
-    normals.push(x, 0, z);
+    const hip = config.position;
+    const foot = [
+      hip[0] + sideMultiplier * 0.3, // Extend outward from body
+      hip[1] - 0.25,                 // Down to ground
+      hip[2]                         // Same Z as hip
+    ];
+    const knee = [
+      hip[0] + sideMultiplier * 0.15, // Halfway outward
+      (hip[1] + foot[1]) * 0.5,       // Halfway down
+      hip[2]                          // Same Z
+    ];
     
-    vertices.push(x, height, z);
-    normals.push(x, 0, z);
+    robot.legs.push({
+      id: i,
+      side: config.side,
+      hip: hip,
+      knee: knee,
+      foot: foot,
+      color: config.side === 'left' ? [0.9, 0.2, 0.2] : [0.2, 0.2, 0.9]
+    });
   }
-  
-  for (let i = 0; i < segments; i++) {
-    const bottom1 = i * 2;
-    const top1 = i * 2 + 1;
-    const bottom2 = ((i + 1) % (segments + 1)) * 2;
-    const top2 = ((i + 1) % (segments + 1)) * 2 + 1;
-    
-    indices.push(bottom1, top1, bottom2);
-    indices.push(bottom2, top1, top2);
-  }
-  
-  return { vertices, normals, indices };
 }
 
 function createBox(width, height, depth) {
   const w = width / 2, h = height / 2, d = depth / 2;
   
   const vertices = [
+    // Front face
     -w, -h,  d,   w, -h,  d,   w,  h,  d,  -w,  h,  d,
+    // Back face
     -w, -h, -d,  -w,  h, -d,   w,  h, -d,   w, -h, -d,
+    // Top face
     -w,  h, -d,  -w,  h,  d,   w,  h,  d,   w,  h, -d,
+    // Bottom face
     -w, -h, -d,   w, -h, -d,   w, -h,  d,  -w, -h,  d,
+    // Right face
      w, -h, -d,   w,  h, -d,   w,  h,  d,   w, -h,  d,
+    // Left face
     -w, -h, -d,  -w, -h,  d,  -w,  h,  d,  -w,  h, -d
   ];
   
@@ -100,7 +104,7 @@ function createBox(width, height, depth) {
   return { vertices, normals, indices };
 }
 
-function createSphere(radius, segments = 16) {
+function createSphere(radius, segments = 12) {
   const vertices = [];
   const normals = [];
   const indices = [];
@@ -138,42 +142,56 @@ function createSphere(radius, segments = 16) {
 }
 
 async function init() {
-  canvas = document.getElementById('glcanvas');
-  gl = canvas.getContext('webgl');
+  try {
+    canvas = document.getElementById('glcanvas');
+    gl = canvas.getContext('webgl');
 
-  if (!gl) {
-    alert('WebGL not supported');
-    return;
+    if (!gl) {
+      alert('WebGL not supported');
+      return;
+    }
+
+    const vsSource = await fetch('./shaders/vertex.glsl').then(res => res.text());
+    const fsSource = await fetch('./shaders/fragment.glsl').then(res => res.text());
+
+    program = createShaderProgram(gl, vsSource, fsSource);
+    if (!program) {
+      console.error('Failed to create shader program');
+      return;
+    }
+    
+    gl.useProgram(program);
+
+    aPositionLoc = gl.getAttribLocation(program, 'aPosition');
+    aNormalLoc = gl.getAttribLocation(program, 'aNormal');
+    uModelLoc = gl.getUniformLocation(program, 'uModel');
+    uViewLoc = gl.getUniformLocation(program, 'uView');
+    uProjectionLoc = gl.getUniformLocation(program, 'uProjection');
+    uColorLoc = gl.getUniformLocation(program, 'uColor');
+    uLightDirLoc = gl.getUniformLocation(program, 'uLightDir');
+
+    positionBuffer = gl.createBuffer();
+    normalBuffer = gl.createBuffer();
+    indexBuffer = gl.createBuffer();
+
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.CULL_FACE);
+
+    // Initialize the robot
+    initializeRobot();
+    
+    addControls();
+    requestAnimationFrame(draw);
+    
+    console.log('Robot initialized with', robot.legs.length, 'legs');
+    console.log('First leg hip position:', robot.legs[0].hip);
+    
+  } catch (error) {
+    console.error('Initialization error:', error);
   }
-
-  const vsSource = await fetch('./shaders/vertex.glsl').then(res => res.text());
-  const fsSource = await fetch('./shaders/fragment.glsl').then(res => res.text());
-
-  program = createShaderProgram(gl, vsSource, fsSource);
-  gl.useProgram(program);
-
-  aPositionLoc = gl.getAttribLocation(program, 'aPosition');
-  aNormalLoc = gl.getAttribLocation(program, 'aNormal');
-  uModelLoc = gl.getUniformLocation(program, 'uModel');
-  uViewLoc = gl.getUniformLocation(program, 'uView');
-  uProjectionLoc = gl.getUniformLocation(program, 'uProjection');
-  uColorLoc = gl.getUniformLocation(program, 'uColor');
-  uLightDirLoc = gl.getUniformLocation(program, 'uLightDir');
-
-  positionBuffer = gl.createBuffer();
-  normalBuffer = gl.createBuffer();
-  indexBuffer = gl.createBuffer();
-
-  gl.enable(gl.DEPTH_TEST);
-  gl.enable(gl.CULL_FACE);
-
-  // Add mouse controls for camera
-  addCameraControls();
-
-  requestAnimationFrame(draw);
 }
 
-function addCameraControls() {
+function addControls() {
   let isDragging = false;
   let lastMouseX = 0;
 
@@ -193,233 +211,168 @@ function addCameraControls() {
   canvas.addEventListener('mouseup', () => {
     isDragging = false;
   });
-
-  // Keyboard controls
-  document.addEventListener('keydown', (e) => {
-    switch(e.key) {
-      case 'ArrowLeft':
-        cameraAngle -= 0.1;
-        break;
-      case 'ArrowRight':
-        cameraAngle += 0.1;
-        break;
-    }
-  });
 }
 
 function draw(timestamp) {
-  time = timestamp * 0.001;
+  try {
+    time = timestamp * 0.001;
 
-  resizeCanvas();
+    resizeCanvas();
 
-  gl.clearColor(0.1, 0.1, 0.15, 1);
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.clearColor(0.1, 0.1, 0.15, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-  gl.useProgram(program);
+    gl.useProgram(program);
 
-  const aspect = canvas.width / canvas.height;
-  const fov = Math.PI / 4;
-  const near = 0.1;
-  const far = 100;
+    const aspect = canvas.width / canvas.height;
+    const fov = Math.PI / 4;
+    const near = 0.1;
+    const far = 100;
 
-  const projection = getPerspectiveMatrix(fov, aspect, near, far);
-  
-  // Fixed camera position (no auto-rotation)
-  const cameraRadius = 4;
-  const cameraHeight = 2.5;
-  const cameraX = Math.cos(cameraAngle) * cameraRadius;
-  const cameraZ = Math.sin(cameraAngle) * cameraRadius;
-  
-  const view = getLookAtMatrix(
-    [cameraX, cameraHeight, cameraZ],
-    [0, 0, 0],
-    [0, 1, 0]
-  );
-
-  gl.uniformMatrix4fv(uProjectionLoc, false, new Float32Array(projection));
-  gl.uniformMatrix4fv(uViewLoc, false, new Float32Array(view));
-  gl.uniform3fv(uLightDirLoc, [0.5, 1.0, 0.3]);
-
-  // Draw robot body first
-  drawRobotBody();
-
-  // Update and draw all legs with tripod gait
-  for (let i = 0; i < legs.length; i++) {
-    const leg = legs[i];
+    const projection = getPerspectiveMatrix(fov, aspect, near, far);
     
-    // Tripod gait animation
-    const gaitSpeed = 1.5;
-    const stepHeight = 0.3;
-    const stepLength = 0.4;
+    const cameraRadius = 2.5;
+    const cameraHeight = 1.5;
+    const cameraX = Math.cos(cameraAngle) * cameraRadius;
+    const cameraZ = Math.sin(cameraAngle) * cameraRadius;
     
-    // Each group alternates
-    const phaseOffset = leg.group * Math.PI;
-    const gaitPhase = (time * gaitSpeed + phaseOffset) % (2 * Math.PI);
-    
-    // Determine if leg is in stance (supporting) or swing (moving) phase
-    const isSwinging = gaitPhase < Math.PI;
-    
-    let targetX, targetY, targetZ;
-    
-    if (isSwinging) {
-      // Swing phase - lift foot and move it forward
-      const swingProgress = gaitPhase / Math.PI;
-      const liftHeight = Math.sin(swingProgress * Math.PI) * stepHeight;
-      const forwardProgress = (swingProgress - 0.5) * stepLength;
-      
-      targetX = leg.base[0] * 1.8 + forwardProgress;
-      targetY = -0.6 + liftHeight;
-      targetZ = leg.base[2] * 1.5;
-    } else {
-      // Stance phase - keep foot planted and move body forward
-      const stanceProgress = (gaitPhase - Math.PI) / Math.PI;
-      const backwardProgress = stanceProgress * stepLength;
-      
-      targetX = leg.base[0] * 1.8 + stepLength * 0.5 - backwardProgress;
-      targetY = -0.6;
-      targetZ = leg.base[2] * 1.5;
-    }
+    const view = getLookAtMatrix(
+      [cameraX, cameraHeight, cameraZ],
+      [0, 0, 0],
+      [0, 1, 0]
+    );
 
-    const target = [targetX, targetY, targetZ];
+    gl.uniformMatrix4fv(uProjectionLoc, false, new Float32Array(projection));
+    gl.uniformMatrix4fv(uViewLoc, false, new Float32Array(view));
+    gl.uniform3fv(uLightDirLoc, [0.5, 1.0, 0.3]);
 
-    // Solve IK for this leg
-    const result = solveIK3D(leg.base, target, leg.len1, leg.len2);
-    leg.joint1 = result.joint1;
-    leg.foot = result.foot;
+    // Draw robot
+    drawRobot();
 
-    // Different colors for left/right sides
-    const legColor = i < 3 ? [0.8, 0.3, 0.2] : [0.2, 0.3, 0.8];
-    
-    // Draw leg segments - thicker for more realistic look
-    drawCylinder(leg.base, leg.joint1, 0.05, legColor);
-    drawCylinder(leg.joint1, leg.foot, 0.04, legColor);
-    
-    // Draw joints
-    drawSphere(leg.base, 0.06, [0.4, 0.4, 0.4]);
-    drawSphere(leg.joint1, 0.05, [0.3, 0.3, 0.3]);
-    drawSphere(leg.foot, 0.04, [1.0, 0.8, 0.2]);
+    requestAnimationFrame(draw);
+  } catch (error) {
+    console.error('Draw error:', error);
   }
-
-  requestAnimationFrame(draw);
 }
 
-function drawRobotBody() {
-  // Main chassis - bigger and more realistic
-  const bodyGeometry = createBox(1.2, 0.3, 0.8);
-  const bodyColor = [0.2, 0.2, 0.2];
+function drawRobot() {
+  // Draw main body
+  const bodyGeometry = createBox(robot.body.width, robot.body.height, robot.body.depth);
+  const bodyColor = [0.2, 0.2, 0.25];
+  const bodyTransform = Mat4.translate(Mat4.identity(), robot.body.position);
+  drawMesh(bodyGeometry, bodyTransform, bodyColor);
   
-  drawMesh(bodyGeometry, Mat4.translate(Mat4.identity(), [0, 0.15, 0]), bodyColor);
+  // Draw top platform
+  const topGeometry = createBox(robot.body.width * 0.7, robot.body.height * 0.5, robot.body.depth * 0.6);
+  const topColor = [0.15, 0.15, 0.2];
+  const topTransform = Mat4.translate(Mat4.identity(), [0, robot.body.height, 0]);
+  drawMesh(topGeometry, topTransform, topColor);
   
-  // Top sensor platform
-  const topGeometry = createBox(0.8, 0.1, 0.5);
-  const topColor = [0.3, 0.3, 0.3];
-  drawMesh(topGeometry, Mat4.translate(Mat4.identity(), [0, 0.35, 0]), topColor);
+  // Draw front sensor
+  const sensorGeometry = createSphere(0.04);
+  const sensorColor = [0.1, 0.7, 0.9];
+  const sensorTransform = Mat4.translate(Mat4.identity(), [robot.body.width * 0.4, robot.body.height * 0.8, 0]);
+  drawMesh(sensorGeometry, sensorTransform, sensorColor);
   
-  // Front sensor dome
-  const domeGeometry = createSphere(0.08, 12);
-  const domeColor = [0.1, 0.6, 0.9];
-  drawMesh(domeGeometry, Mat4.translate(Mat4.identity(), [0.4, 0.35, 0]), domeColor);
+  // FIRST: Draw hip joints on the body to show attachment points
+  for (let i = 0; i < robot.legs.length; i++) {
+    const leg = robot.legs[i];
+    drawSphere(leg.hip, 0.04, [0.7, 0.7, 0.7]); // Visible hip joints
+  }
   
-  // Side sensors
-  drawMesh(domeGeometry, Mat4.translate(Mat4.identity(), [0, 0.35, 0.3]), [0.9, 0.2, 0.2]);
-  drawMesh(domeGeometry, Mat4.translate(Mat4.identity(), [0, 0.35, -0.3]), [0.9, 0.2, 0.2]);
+  // THEN: Draw all legs starting from those hip joints
+  for (let i = 0; i < robot.legs.length; i++) {
+    drawLeg(robot.legs[i]);
+  }
 }
 
-function drawCylinder(p1, p2, radius, color) {
-  const cylinderGeometry = createCylinder(radius, 1, 16);
-  const transform = computeCylinderTransform(p1, p2, radius);
-  drawMesh(cylinderGeometry, transform, color);
+function drawLeg(leg) {
+  // DON'T draw hip joint again (already drawn in drawRobot)
+  
+  // Draw upper leg segment - MUST start exactly from leg.hip
+  drawLine(leg.hip, leg.knee, leg.color, 0.03);
+  
+  // Draw knee joint
+  drawSphere(leg.knee, 0.025, [0.4, 0.4, 0.4]);
+  
+  // Draw lower leg segment - from knee to foot
+  drawLine(leg.knee, leg.foot, leg.color, 0.025);
+  
+  // Draw foot
+  drawSphere(leg.foot, 0.035, [1.0, 0.8, 0.2]);
+  
+  // DEBUG: Print leg positions to console
+  if (leg.id === 0) { // Only print first leg to avoid spam
+    console.log(`Leg ${leg.id}: Hip=${leg.hip}, Knee=${leg.knee}, Foot=${leg.foot}`);
+  }
+}
+
+function drawLine(p1, p2, color, thickness = 0.02) {
+  const dir = Vec3.subtract(p2, p1);
+  const len = Vec3.length(dir);
+  
+  if (len < 0.001) return;
+  
+  const mid = Vec3.scale(Vec3.add(p1, p2), 0.5);
+  const lineGeometry = createBox(thickness, len, thickness);
+  
+  let transform = Mat4.translate(Mat4.identity(), mid);
+  
+  const dirNorm = Vec3.normalize(dir);
+  if (Math.abs(dirNorm[1]) < 0.999) {
+    const angle = Math.acos(Math.max(-1, Math.min(1, dirNorm[1])));
+    const axis = Vec3.normalize(Vec3.cross([0, 1, 0], dirNorm));
+    if (Vec3.length(axis) > 0.001) {
+      transform = Mat4.multiply(transform, getRotationMatrix(axis, angle));
+    }
+  }
+  
+  drawMesh(lineGeometry, transform, color);
 }
 
 function drawSphere(pos, radius, color) {
-  const sphereGeometry = createSphere(radius, 12);
-  const transform = Mat4.scale(Mat4.translate(Mat4.identity(), pos), [1, 1, 1]);
+  const sphereGeometry = createSphere(radius);
+  const transform = Mat4.translate(Mat4.identity(), pos);
   drawMesh(sphereGeometry, transform, color);
 }
 
 function drawMesh(geometry, transform, color) {
-  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(geometry.vertices), gl.DYNAMIC_DRAW);
-  gl.enableVertexAttribArray(aPositionLoc);
-  gl.vertexAttribPointer(aPositionLoc, 3, gl.FLOAT, false, 0, 0);
+  try {
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(geometry.vertices), gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(aPositionLoc);
+    gl.vertexAttribPointer(aPositionLoc, 3, gl.FLOAT, false, 0, 0);
 
-  gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(geometry.normals), gl.DYNAMIC_DRAW);
-  gl.enableVertexAttribArray(aNormalLoc);
-  gl.vertexAttribPointer(aNormalLoc, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(geometry.normals), gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(aNormalLoc);
+    gl.vertexAttribPointer(aNormalLoc, 3, gl.FLOAT, false, 0, 0);
 
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
-  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(geometry.indices), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(geometry.indices), gl.DYNAMIC_DRAW);
 
-  gl.uniformMatrix4fv(uModelLoc, false, new Float32Array(transform));
-  gl.uniform3fv(uColorLoc, color);
+    gl.uniformMatrix4fv(uModelLoc, false, new Float32Array(transform));
+    gl.uniform3fv(uColorLoc, color);
 
-  gl.drawElements(gl.TRIANGLES, geometry.indices.length, gl.UNSIGNED_SHORT, 0);
-}
-
-function computeCylinderTransform(p1, p2, radius) {
-  const mid = Vec3.scale(Vec3.add(p1, p2), 0.5);
-  const dir = Vec3.subtract(p2, p1);
-  const len = Vec3.length(dir);
-  
-  let mat = Mat4.identity();
-  mat = Mat4.translate(mat, mid);
-  
-  if (len > 0.001) {
-    const dirNorm = Vec3.normalize(dir);
-    const up = [0, 1, 0];
-    const right = Vec3.normalize(Vec3.cross(up, dirNorm));
-    const forward = Vec3.cross(dirNorm, right);
-    
-    const rotMat = [
-      right[0], dirNorm[0], forward[0], 0,
-      right[1], dirNorm[1], forward[1], 0,
-      right[2], dirNorm[2], forward[2], 0,
-      0, 0, 0, 1
-    ];
-    
-    mat = Mat4.multiply(mat, rotMat);
+    gl.drawElements(gl.TRIANGLES, geometry.indices.length, gl.UNSIGNED_SHORT, 0);
+  } catch (error) {
+    console.error('Draw mesh error:', error);
   }
-  
-  mat = Mat4.scale(mat, [radius, len, radius]);
-  return mat;
 }
 
-function solveIK3D(base, target, len1, len2) {
-  let dir = Vec3.subtract(target, base);
-  const targetDist = Vec3.length(dir);
+function getRotationMatrix(axis, angle) {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const [x, y, z] = axis;
   
-  const maxReach = len1 + len2;
-  const minReach = Math.abs(len1 - len2);
-  const clampedDist = Math.max(minReach, Math.min(maxReach * 0.95, targetDist));
-  
-  if (targetDist > 0.001) {
-    dir = Vec3.scale(Vec3.normalize(dir), clampedDist);
-  } else {
-    dir = [clampedDist, 0, 0];
-  }
-  
-  const clampedTarget = Vec3.add(base, dir);
-  const planeDist = Vec3.length(dir);
-  
-  // Law of cosines for the angle at the base joint
-  const cosAngle = (len1 * len1 + planeDist * planeDist - len2 * len2) / (2 * len1 * planeDist);
-  const angle = Math.acos(Math.max(-1, Math.min(1, cosAngle)));
-  
-  // Calculate joint position
-  const dirNorm = Vec3.normalize(dir);
-  const joint1 = Vec3.add(base, Vec3.scale(dirNorm, len1 * Math.cos(angle)));
-  
-  // Add some Y offset for more natural leg bending
-  joint1[1] += len1 * Math.sin(angle) * 0.5;
-
-  return {
-    joint1,
-    foot: clampedTarget
-  };
+  return [
+    c + x*x*(1-c),   x*y*(1-c) - z*s, x*z*(1-c) + y*s, 0,
+    y*x*(1-c) + z*s, c + y*y*(1-c),   y*z*(1-c) - x*s, 0,
+    z*x*(1-c) - y*s, z*y*(1-c) + x*s, c + z*z*(1-c),   0,
+    0,               0,               0,               1
+  ];
 }
 
-// Matrix multiplication utility
 Mat4.multiply = function(a, b) {
   const result = new Array(16);
   for (let i = 0; i < 4; i++) {
