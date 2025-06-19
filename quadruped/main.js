@@ -1,20 +1,22 @@
-// Main application code - Clean version with working camera
+// Main application code - Fixed matrix functions
 let gl, program, canvas;
 let animationRunning = true;
 let time = 0;
 
 // Camera controls
 let cameraDistance = 8;
-let cameraAngleX = 0.0; // Start level
-let cameraAngleY = 0.0; // Start facing forward
+let cameraAngleX = 0.0;
+let cameraAngleY = 0.0;
 let isDragging = false;
 let lastMouseX = 0;
 let lastMouseY = 0;
 
 // Robot parts
-let robotBody, robotHead, robotLegs, ground, robotEyes;
+let robotBody, robotHead, robotEyes, robotNose, robotTail;
+let robotUpperLegs, robotLowerLegs, robotFeet;
+let ground;
 
-// Matrix functions
+// Matrix functions - properly structured
 function createMatrix4() {
     return new Float32Array(16);
 }
@@ -58,8 +60,26 @@ function rotateX(out, a, rad) {
     return out;
 }
 
+function rotateY(out, a, rad) {
+    const s = Math.sin(rad);
+    const c = Math.cos(rad);
+    const a00 = a[0], a01 = a[1], a02 = a[2], a03 = a[3];
+    const a20 = a[8], a21 = a[9], a22 = a[10], a23 = a[11];
+    
+    out[0] = a00 * c - a20 * s;
+    out[1] = a01 * c - a21 * s;
+    out[2] = a02 * c - a22 * s;
+    out[3] = a03 * c - a23 * s;
+    out[4] = a[4]; out[5] = a[5]; out[6] = a[6]; out[7] = a[7];
+    out[8] = a00 * s + a20 * c;
+    out[9] = a01 * s + a21 * c;
+    out[10] = a02 * s + a22 * c;
+    out[11] = a03 * s + a23 * c;
+    out[12] = a[12]; out[13] = a[13]; out[14] = a[14]; out[15] = a[15];
+    return out;
+}
+
 function simpleInvert(out, matrix) {
-    // Simple matrix inversion for our use case
     for (let i = 0; i < 16; i++) {
         out[i] = matrix[i];
     }
@@ -187,43 +207,6 @@ function createCube(width, height, depth) {
     return createGeometry(positions, normals, indices);
 }
 
-function createCylinder(radius, height) {
-    const segments = 12;
-    const positions = [];
-    const normals = [];
-    const indices = [];
-    
-    for (let i = 0; i <= segments; i++) {
-        const angle = (i / segments) * Math.PI * 2;
-        const x = Math.cos(angle) * radius;
-        const z = Math.sin(angle) * radius;
-        
-        // Top vertex
-        positions.push(x, height / 2, z);
-        normals.push(x / radius, 0, z / radius);
-        
-        // Bottom vertex
-        positions.push(x, -height / 2, z);
-        normals.push(x / radius, 0, z / radius);
-    }
-    
-    for (let i = 0; i < segments; i++) {
-        const a = i * 2;
-        const b = a + 1;
-        const c = ((i + 1) % (segments + 1)) * 2;
-        const d = c + 1;
-        
-        indices.push(a, b, c);
-        indices.push(b, d, c);
-    }
-    
-    return createGeometry(
-        new Float32Array(positions),
-        new Float32Array(normals),
-        new Uint16Array(indices)
-    );
-}
-
 function createGeometry(positions, normals, indices) {
     return {
         vertexBuffer: createBuffer(positions),
@@ -248,20 +231,46 @@ function createIndexBuffer(data) {
 }
 
 function createRobotParts() {
-    robotBody = createCube(2, 0.8, 1.2);
-    robotHead = createCube(0.6, 0.6, 0.6);
+    // More realistic proportions
+    robotBody = createCube(1.5, 0.6, 0.8);
+    robotHead = createCube(0.4, 0.35, 0.5);
+    
+    // Eyes and nose
     robotEyes = [
-        createCube(0.1, 0.1, 0.1),
-        createCube(0.1, 0.1, 0.1)
+        createCube(0.08, 0.08, 0.08),
+        createCube(0.08, 0.08, 0.08)
     ];
-    robotLegs = [
-        createCylinder(0.1, 1.2),
-        createCylinder(0.1, 1.2),
-        createCylinder(0.1, 1.2),
-        createCylinder(0.1, 1.2)
+    robotNose = createCube(0.06, 0.04, 0.08);
+    
+    // Realistic leg structure
+    robotUpperLegs = [
+        createCube(0.12, 0.5, 0.12),
+        createCube(0.12, 0.5, 0.12),
+        createCube(0.12, 0.5, 0.12),
+        createCube(0.12, 0.5, 0.12)
     ];
+    
+    robotLowerLegs = [
+        createCube(0.08, 0.4, 0.08),
+        createCube(0.08, 0.4, 0.08),
+        createCube(0.08, 0.4, 0.08),
+        createCube(0.08, 0.4, 0.08)
+    ];
+    
+    robotFeet = [
+        createCube(0.15, 0.08, 0.25),
+        createCube(0.15, 0.08, 0.25),
+        createCube(0.15, 0.08, 0.25),
+        createCube(0.15, 0.08, 0.25)
+    ];
+    
+    // Tail
+    robotTail = createCube(0.06, 0.06, 0.3);
+    
+    // Ground
     ground = createCube(20, 0.2, 20);
-    console.log('Robot parts created');
+    
+    console.log('Realistic robot parts created');
 }
 
 function renderPart(part, modelMatrix, color) {
@@ -294,24 +303,24 @@ function renderRobot() {
     // Render ground
     const groundMatrix = createMatrix4();
     identity(groundMatrix);
-    translate(groundMatrix, groundMatrix, [0, -1.5, 0]);
-    renderPart(ground, groundMatrix, [0.2, 0.5, 0.2]);
+    translate(groundMatrix, groundMatrix, [0, -1.2, 0]);
+    renderPart(ground, groundMatrix, [0.15, 0.4, 0.15]);
     
     // Render robot body
     const bodyMatrix = createMatrix4();
     identity(bodyMatrix);
-    renderPart(robotBody, bodyMatrix, [0.3, 0.5, 0.8]);
+    renderPart(robotBody, bodyMatrix, [0.2, 0.3, 0.5]);
     
     // Render robot head
     const headMatrix = createMatrix4();
     identity(headMatrix);
-    translate(headMatrix, headMatrix, [0, 0.8, 0]);
-    renderPart(robotHead, headMatrix, [0.5, 0.7, 1.0]);
+    translate(headMatrix, headMatrix, [0.6, 0.1, 0]);
+    renderPart(robotHead, headMatrix, [0.3, 0.4, 0.6]);
     
     // Render robot eyes
     const eyePositions = [
-        [-0.15, 0.9, 0.25],
-        [0.15, 0.9, 0.25]
+        [0.8, 0.15, -0.12],
+        [0.8, 0.15, 0.12]
     ];
     
     robotEyes.forEach((eye, i) => {
@@ -321,26 +330,40 @@ function renderRobot() {
         renderPart(eye, eyeMatrix, [0.1, 0.8, 0.1]);
     });
     
-    // Render robot legs with animation
+    // Render nose
+    const noseMatrix = createMatrix4();
+    identity(noseMatrix);
+    translate(noseMatrix, noseMatrix, [0.85, 0.05, 0]);
+    renderPart(robotNose, noseMatrix, [0.1, 0.1, 0.1]);
+    
+    // Render tail (with simple animation)
+    const tailMatrix = createMatrix4();
+    identity(tailMatrix);
+    translate(tailMatrix, tailMatrix, [-0.8, 0.2, 0]);
+    const tailWag = Math.sin(time * 3) * 0.2;
+    rotateY(tailMatrix, tailMatrix, tailWag);
+    renderPart(robotTail, tailMatrix, [0.25, 0.35, 0.55]);
+    
+    // Render simplified legs
     const legPositions = [
-        [-0.5, -0.8, 0.3],   // front left
-        [0.5, -0.8, 0.3],    // front right
-        [-0.5, -0.8, -0.3],  // back left
-        [0.5, -0.8, -0.3]    // back right
+        [0.4, -0.5, -0.3],   // front left
+        [0.4, -0.5, 0.3],    // front right
+        [-0.4, -0.5, -0.3],  // back left
+        [-0.4, -0.5, 0.3]    // back right
     ];
     
-    robotLegs.forEach((leg, i) => {
+    // Simple leg animation
+    for (let i = 0; i < 4; i++) {
         const legMatrix = createMatrix4();
         identity(legMatrix);
         translate(legMatrix, legMatrix, legPositions[i]);
         
-        // Walking animation
-        const legPhase = time * 2 + (i % 2) * Math.PI;
+        const legPhase = time * 1.5 + (i % 2) * Math.PI;
         const legRotation = Math.sin(legPhase) * 0.3;
         rotateX(legMatrix, legMatrix, legRotation);
         
-        renderPart(leg, legMatrix, [0.2, 0.3, 0.6]);
-    });
+        renderPart(robotUpperLegs[i], legMatrix, [0.15, 0.25, 0.4]);
+    }
 }
 
 function init() {
@@ -392,12 +415,15 @@ function setupShaders() {
 }
 
 function setupControls() {
+    console.log('Setting up controls...');
+    
     canvas.addEventListener('mousedown', (e) => {
         isDragging = true;
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
         canvas.style.cursor = 'grabbing';
-        console.log('Mouse down - starting drag');
+        console.log('Mouse DOWN at:', e.clientX, e.clientY);
+        e.preventDefault();
     });
     
     canvas.addEventListener('mousemove', (e) => {
@@ -405,40 +431,33 @@ function setupControls() {
             const deltaX = e.clientX - lastMouseX;
             const deltaY = e.clientY - lastMouseY;
             
-            // Horizontal rotation (left/right mouse movement)
-            cameraAngleY -= deltaX * 0.01; // Negative for natural rotation
-            
-            // Vertical rotation (up/down mouse movement)
-            cameraAngleX -= deltaY * 0.01; // Negative for natural rotation
-            
-            // Clamp vertical rotation to prevent flipping
-            cameraAngleX = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, cameraAngleX));
+            cameraAngleY += deltaX * 0.01;
+            cameraAngleX += deltaY * 0.01;
+            cameraAngleX = Math.max(-Math.PI * 0.45, Math.min(Math.PI * 0.45, cameraAngleX));
             
             lastMouseX = e.clientX;
             lastMouseY = e.clientY;
         }
+        e.preventDefault();
     });
     
-    canvas.addEventListener('mouseup', () => {
-        isDragging = false;
-        canvas.style.cursor = 'grab';
-        console.log('Mouse up - stopped dragging');
-    });
-    
-    canvas.addEventListener('mouseleave', () => {
-        isDragging = false;
-        canvas.style.cursor = 'grab';
+    document.addEventListener('mouseup', () => {
+        if (isDragging) {
+            isDragging = false;
+            canvas.style.cursor = 'grab';
+            console.log('Mouse UP - stopped dragging');
+        }
     });
     
     canvas.addEventListener('wheel', (e) => {
         e.preventDefault();
         cameraDistance += e.deltaY * 0.01;
         cameraDistance = Math.max(2, Math.min(20, cameraDistance));
-        console.log('Zoom:', cameraDistance);
+        console.log('Zoom:', cameraDistance.toFixed(1));
     });
     
-    // Set initial cursor
     canvas.style.cursor = 'grab';
+    console.log('Controls setup complete');
 }
 
 function resizeCanvas() {
@@ -468,63 +487,55 @@ function updateCamera() {
     projectionMatrix[14] = near * far * rangeInv * 2;
     projectionMatrix[15] = 0;
     
-    // Proper orbit camera - calculate camera position
-    const cameraX = Math.cos(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
+    // Camera position using spherical coordinates
+    const cameraX = Math.sin(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
     const cameraY = Math.sin(cameraAngleX) * cameraDistance;
-    const cameraZ = Math.sin(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
+    const cameraZ = Math.cos(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
     
-    // Target point (where we're looking)
-    const targetX = 0;
-    const targetY = 0;
-    const targetZ = 0;
-    
-    // Calculate look direction
-    const lookX = targetX - cameraX;
-    const lookY = targetY - cameraY;
-    const lookZ = targetZ - cameraZ;
-    
-    // Normalize look direction
-    const lookLength = Math.sqrt(lookX * lookX + lookY * lookY + lookZ * lookZ);
-    const lookXNorm = lookX / lookLength;
-    const lookYNorm = lookY / lookLength;
-    const lookZNorm = lookZ / lookLength;
-    
-    // Up vector
-    const upX = 0, upY = 1, upZ = 0;
-    
-    // Right vector (cross product of look and up)
-    const rightX = lookYNorm * upZ - lookZNorm * upY;
-    const rightY = lookZNorm * upX - lookXNorm * upZ;
-    const rightZ = lookXNorm * upY - lookYNorm * upX;
-    
-    // Recalculate up vector (cross product of right and look)
-    const upXNew = rightY * lookZNorm - rightZ * lookYNorm;
-    const upYNew = rightZ * lookXNorm - rightX * lookZNorm;
-    const upZNew = rightX * lookYNorm - rightY * lookXNorm;
+    const eye = [cameraX, cameraY, cameraZ];
+    const target = [0, 0, 0];
+    const up = [0, 1, 0];
     
     // Build view matrix
+    const zAxis = [
+        eye[0] - target[0],
+        eye[1] - target[1], 
+        eye[2] - target[2]
+    ];
+    const zLength = Math.sqrt(zAxis[0] * zAxis[0] + zAxis[1] * zAxis[1] + zAxis[2] * zAxis[2]);
+    zAxis[0] /= zLength;
+    zAxis[1] /= zLength;
+    zAxis[2] /= zLength;
+    
+    const xAxis = [
+        up[1] * zAxis[2] - up[2] * zAxis[1],
+        up[2] * zAxis[0] - up[0] * zAxis[2],
+        up[0] * zAxis[1] - up[1] * zAxis[0]
+    ];
+    const xLength = Math.sqrt(xAxis[0] * xAxis[0] + xAxis[1] * xAxis[1] + xAxis[2] * xAxis[2]);
+    xAxis[0] /= xLength;
+    xAxis[1] /= xLength;
+    xAxis[2] /= xLength;
+    
+    const yAxis = [
+        zAxis[1] * xAxis[2] - zAxis[2] * xAxis[1],
+        zAxis[2] * xAxis[0] - zAxis[0] * xAxis[2],
+        zAxis[0] * xAxis[1] - zAxis[1] * xAxis[0]
+    ];
+    
     identity(viewMatrix);
-    
-    // Rotation part
-    viewMatrix[0] = rightX;
-    viewMatrix[1] = upXNew;
-    viewMatrix[2] = -lookXNorm;
-    viewMatrix[3] = 0;
-    
-    viewMatrix[4] = rightY;
-    viewMatrix[5] = upYNew;
-    viewMatrix[6] = -lookYNorm;
-    viewMatrix[7] = 0;
-    
-    viewMatrix[8] = rightZ;
-    viewMatrix[9] = upZNew;
-    viewMatrix[10] = -lookZNorm;
-    viewMatrix[11] = 0;
-    
-    // Translation part
-    viewMatrix[12] = -(rightX * cameraX + rightY * cameraY + rightZ * cameraZ);
-    viewMatrix[13] = -(upXNew * cameraX + upYNew * cameraY + upZNew * cameraZ);
-    viewMatrix[14] = -(-lookXNorm * cameraX + -lookYNorm * cameraY + -lookZNorm * cameraZ);
+    viewMatrix[0] = xAxis[0];
+    viewMatrix[1] = yAxis[0];
+    viewMatrix[2] = zAxis[0];
+    viewMatrix[4] = xAxis[1];
+    viewMatrix[5] = yAxis[1];
+    viewMatrix[6] = zAxis[1];
+    viewMatrix[8] = xAxis[2];
+    viewMatrix[9] = yAxis[2];
+    viewMatrix[10] = zAxis[2];
+    viewMatrix[12] = -(xAxis[0] * eye[0] + xAxis[1] * eye[1] + xAxis[2] * eye[2]);
+    viewMatrix[13] = -(yAxis[0] * eye[0] + yAxis[1] * eye[1] + yAxis[2] * eye[2]);
+    viewMatrix[14] = -(zAxis[0] * eye[0] + zAxis[1] * eye[1] + zAxis[2] * eye[2]);
     viewMatrix[15] = 1;
     
     gl.uniformMatrix4fv(gl.getUniformLocation(program, 'u_viewMatrix'), false, viewMatrix);
@@ -535,14 +546,19 @@ function updateCamera() {
 }
 
 function render() {
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    
-    if (animationRunning) {
-        time += 0.016;
+    try {
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        
+        if (animationRunning) {
+            time += 0.016;
+        }
+        
+        updateCamera();
+        renderRobot();
+    } catch (error) {
+        console.error('Render error:', error);
+        animationRunning = false;
     }
-    
-    updateCamera();
-    renderRobot();
     
     requestAnimationFrame(render);
 }
