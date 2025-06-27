@@ -2,119 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>K-Leg Robot IK - Week 1</title>
+  <title>Quadruped IK</title>
   <style>
-    html, body { margin: 0; overflow: hidden; background: #111; }
-    canvas { display: block; width: 100vw; height: 100vh; }
+    body { margin: 0; background: #111; }
+    canvas { display: block; margin: auto; }
   </style>
 </head>
 <body>
-<canvas id="glcanvas"></canvas>
-<script>
-  const canvas = document.getElementById('glcanvas');
-  const gl = canvas.getContext('webgl');
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-  gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.clearColor(0.1, 0.1, 0.1, 1.0);
-
-  const vertexShaderSource = `
-    attribute vec2 a_position;
-    uniform vec2 u_resolution;
-    void main() {
-      vec2 zeroToOne = a_position / u_resolution;
-      vec2 zeroToTwo = zeroToOne * 2.0;
-      vec2 clipSpace = zeroToTwo - 1.0;
-      gl_Position = vec4(clipSpace * vec2(1, -1), 0, 1);
-    }
-  `;
-
-  const fragmentShaderSource = `
-    precision mediump float;
-    uniform vec4 u_color;
-    void main() {
-      gl_FragColor = u_color;
-    }
-  `;
-
-  function createShader(gl, type, source) {
-    const shader = gl.createShader(type);
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      console.error(gl.getShaderInfoLog(shader));
-      gl.deleteShader(shader);
-    }
-    return shader;
-  }
-
-  function createProgram(gl, vShaderSource, fShaderSource) {
-    const vShader = createShader(gl, gl.VERTEX_SHADER, vShaderSource);
-    const fShader = createShader(gl, gl.FRAGMENT_SHADER, fShaderSource);
-    const program = gl.createProgram();
-    gl.attachShader(program, vShader);
-    gl.attachShader(program, fShader);
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      console.error(gl.getProgramInfoLog(program));
-      gl.deleteProgram(program);
-    }
-    return program;
-  }
-
-  const program = createProgram(gl, vertexShaderSource, fragmentShaderSource);
-  gl.useProgram(program);
-
-  const posAttrib = gl.getAttribLocation(program, "a_position");
-  const resUniform = gl.getUniformLocation(program, "u_resolution");
-  const colorUniform = gl.getUniformLocation(program, "u_color");
-
-  const buffer = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-
-  gl.enableVertexAttribArray(posAttrib);
-  gl.vertexAttribPointer(posAttrib, 2, gl.FLOAT, false, 0, 0);
-
-  function solveIK(base, target, len1, len2) {
-    const dx = target[0] - base[0];
-    const dy = target[1] - base[1];
-    const dist = Math.min(Math.hypot(dx, dy), len1 + len2);
-    const angleA = Math.acos((len1**2 + dist**2 - len2**2) / (2 * len1 * dist));
-    const angleB = Math.atan2(dy, dx);
-
-    const joint = [
-      base[0] + len1 * Math.cos(angleB - angleA),
-      base[1] + len1 * Math.sin(angleB - angleA)
-    ];
-
-    return { joint, foot: target };
-  }
-
-  function drawLine(p1, p2, color) {
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([...p1, ...p2]), gl.STATIC_DRAW);
-    gl.uniform4fv(colorUniform, color);
-    gl.drawArrays(gl.LINES, 0, 2);
-  }
-
-  const base = [canvas.width / 2, canvas.height / 2];
-  const len1 = 100, len2 = 100;
-
-  function animate(time) {
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.uniform2f(resUniform, canvas.width, canvas.height);
-
-    const t = time * 0.002;
-    const target = [base[0] + Math.sin(t) * 150, base[1] + Math.cos(t) * 50];
-
-    const { joint, foot } = solveIK(base, target, len1, len2);
-
-    drawLine(base, joint, [1, 0.2, 0.2, 1]);
-    drawLine(joint, foot, [0.2, 0.8, 0.2, 1]);
-
-    requestAnimationFrame(animate);
-  }
-
-  requestAnimationFrame(animate);
-</script>
+  <canvas id="glCanvas" width="800" height="600"></canvas>
+  <script type="module">
+    import './main.js';
+  </script>
 </body>
 </html>
