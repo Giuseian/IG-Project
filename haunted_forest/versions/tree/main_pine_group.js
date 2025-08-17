@@ -114,10 +114,10 @@ function scatterSimple(source, n=40, minR=5, maxR=12){
 
 /* carica OBJ+MTL e crea la foresta */
 (async function(){
-  const mtl = await new MTLLoader().loadAsync('/assets/textures/trees/again_pine.mtl');
+  const mtl = await new MTLLoader().loadAsync('/assets/textures/trees/pine.mtl');
   mtl.preload();
   const loader = new OBJLoader().setMaterials(mtl);
-  const root = await loader.loadAsync('/assets/textures/trees/again_pine.obj');
+  const root = await loader.loadAsync('/assets/textures/trees/pine.obj');
 
   normalizeAndPlace(root);
   applyTreePBR(root);
