@@ -34,7 +34,6 @@ export class SpatialHash {
 }
 
 
-
 // // MULTIPLE INSTANCES - PINE AND OAK 
 // export class SpatialHash {
 //   constructor(cellSize = 10) {
