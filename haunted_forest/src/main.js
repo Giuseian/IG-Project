@@ -434,19 +434,19 @@ async function setupForest(scene){
 
   const forest = new ForestSystem(scene, {
     seed: 2025,
-    innerRadius: 120,
-    outerRadius: 1800,
-    minSpacing: 8,
-    maxSpacing: 12,
-    count: 800,
-    scale: [0.9, 1.25],
-    clearings: [{ x:0, z:0, r:120 }],
+    innerRadius: 200,
+    outerRadius: 6000,
+    minSpacing: 22,
+    maxSpacing: 34,
+    count: 4500,
+    scale: [0.9, 1.35],
+    clearings: [{ x:0, z:0, r:200 }],
     types: [{
       name: 'pine',
       url: '/assets/textures/trees/pine.obj',
       options: PINE_OPTIONS,             // <<< IMPORTANTISSIMO
-      occluderHeight: 140,
-      occluderRadiusScale: 0.42
+      occluderHeight: 160,
+      occluderRadiusScale: 0.9
     }]
   }, catalog);
 
