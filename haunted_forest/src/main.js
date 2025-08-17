@@ -1,535 +1,771 @@
-// Import Three.js core and OrbitControls
+// // nebbia funziona 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
 
 let scene, camera, renderer, controls;
-let ambient, sun, moon, hemi;
-let ground;
+let ambient, sun;
 let debugEl;
-let skyDome, skyMat;
+let animateFog = true;       // [A] per ON/OFF
+const _fogShaders = new Set();
 
-// === PERCORSO TEXTURE (cambialo se serve) ===
-const TEX_BASE = 'assets/textures/grass/';
-
-// Debug cache for overlay
-const _dbg = { sunUp:0, wAmb:0, wExp:0, wFog:0, uFogH:0, uFogD:0, tile:32 };
-
-// ---------- TINTA LEGGERA DEL TERRENO (Opzione A.2) ----------
-let TINT_STRENGTH = 0.35; // 0 = no tint, 1 = full tint
-
-// === Palettes (night/day endpoints) ===
-const PALETTE = {
-  night: {
-    fogColor: 0x0a1220, fogDensity: 0.025,
-    ambientColor: 0xb1c0d4, ambientIntensity: 0.14,
-    sunColor: 0xbfd6ff, sunIntensity: 1.0,
-    hemiSky: 0x1a2738, hemiGround: 0x141414, hemiIntensity: 0.06,
-    groundColor: 0x20261b, exposure: 1.00
-  },
-  day: {
-    fogColor: 0xd7dee6, fogDensity: 0.010,
-    ambientColor: 0xfff0d0, ambientIntensity: 0.38,
-    sunColor: 0xffe6b3, sunIntensity: 1.7,
-    hemiSky: 0xcfe4ff, hemiGround: 0xb0b6aa, hemiIntensity: 0.18,
-    groundColor: 0x4b5a39, exposure: 1.18
-  }
-};
-
-// ---- Day–Night constants ----
-const DAY_LENGTH = 120;
-const SKY_RADIUS  = 120;
-
-// ---- Time driver ----
-let startTime = performance.now();
-let timeScale = 1;
-let manualPhase = null;
-
-// === SkyDome gradient colors ===
-const FOG_DAY   = new THREE.Color(PALETTE.day.fogColor);
-const FOG_NIGHT = new THREE.Color(PALETTE.night.fogColor);
-
-const SKY_DAY_TOP    = new THREE.Color(0x89c7ff);
-const SKY_DAY_BOTTOM = FOG_DAY.clone();
-const SKY_NIGHT_TOP  = new THREE.Color(0x0a1330);
-const SKY_NIGHT_BOTTOM = FOG_NIGHT.clone();
-
-// === Fog preset controller (keys F1/F2/F3) ===
-const FogPreset = {
-  multiplier: 1.0,
-  heightDay:  55.0,
-  heightNight:35.0,
-  densityBoost: 12.0,
-  horizonWidth: 0.32,
-  horizonPower: 1.4
-};
-
-// === Skydome shaders ===
-const SKY_VERT = /* glsl */`
-  varying vec3 vWorldPos;
-  void main() {
-    vWorldPos = (modelMatrix * vec4(position,1.0)).xyz;
-    gl_Position = projectionMatrix * viewMatrix * vec4(position, 1.0);
-  }
+/* ================== Procedural fog chunks (FBM) ================== */
+const NOISE_GLSL = `
+vec3 mod289(vec3 x){return x - floor(x*(1.0/289.0))*289.0;}
+vec4 mod289(vec4 x){return x - floor(x*(1.0/289.0))*289.0;}
+vec4 permute(vec4 x){return mod289(((x*34.0)+1.0)*x);}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
+float snoise(vec3 v){
+  const vec2 C=vec2(1.0/6.0,1.0/3.0); const vec4 D=vec4(0.0,0.5,1.0,2.0);
+  vec3 i=floor(v+dot(v,C.yyy)); vec3 x0=v-i+dot(i,C.xxx);
+  vec3 g=step(x0.yzx,x0.xyz); vec3 l=1.0-g; vec3 i1=min(g.xyz,l.zxy); vec3 i2=max(g.xyz,l.zxy);
+  vec3 x1=x0-i1+C.xxx; vec3 x2=x0-i2+C.yyy; vec3 x3=x0-D.yyy; i=mod289(i);
+  vec4 p=permute(permute(permute(i.z+vec4(0.0,i1.z,i2.z,1.0))+i.y+vec4(0.0,i1.y,i2.y,1.0))+i.x+vec4(0.0,i1.x,i2.x,1.0));
+  float n_=0.142857142857; vec3 ns=n_*D.wyz - D.xzx;
+  vec4 j=p-49.0*floor(p*ns.z*ns.z); vec4 x_=floor(j*ns.z); vec4 y_=floor(j-7.0*x_);
+  vec4 x=x_*ns.x+ns.yyyy; vec4 y=y_*ns.x+ns.yyyy; vec4 h=1.0-abs(x)-abs(y);
+  vec4 b0=vec4(x.xy,y.xy); vec4 b1=vec4(x.zw,y.zw); vec4 s0=floor(b0)*2.0+1.0; vec4 s1=floor(b1)*2.0+1.0; vec4 sh=-step(h,vec4(0.0));
+  vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy; vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+  vec3 p0=vec3(a0.xy,h.x); vec3 p1=vec3(a0.zw,h.y); vec3 p2=vec3(a1.xy,h.z); vec3 p3=vec3(a1.zw,h.w);
+  vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
+  p0*=norm.x; p1*=norm.y; p2*=norm.z; p3*=norm.w;
+  vec4 m=max(0.5-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.0); m=m*m;
+  return 105.0*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
+}
+float FBM(vec3 p){ float v=0.0,a=0.5; for(int i=0;i<6;i++){ v+=a*snoise(p); p*=2.0; a*=0.5; } return v; }
 `;
 
-const SKY_FRAG = /* glsl */`
-  precision highp float;
-  varying vec3 vWorldPos;
-
-  uniform vec3 uCamPos;
-
-  uniform vec3 topDay;
-  uniform vec3 bottomDay;
-  uniform vec3 topNight;
-  uniform vec3 bottomNight;
-
-  uniform vec3 sunDir;
-  uniform vec3 moonDir;
-  uniform float sunUp;
-
-  uniform float sunSize;
-  uniform float sunSoftness;
-  uniform float sunIntensity;
-
-  uniform float moonSize;
-  uniform float moonSoftness;
-  uniform float moonIntensity;
-
-  uniform vec3  uFogColor;
-  uniform float uFogDensity;
-  uniform float uFogHeight;
-  uniform float uHorizonWidth;
-  uniform float uHorizonPower;
-
-  float softDisc(vec3 dir, vec3 centerDir, float size, float softness){
-    float cosAng = dot(normalize(dir), normalize(centerDir));
-    float inner = cos(size);
-    float outer = cos(size + softness);
-    float t = clamp((cosAng - outer) / max(1e-5, (inner - outer)), 0.0, 1.0);
-    return t;
-  }
-
-  void main() {
-    vec3 dir = normalize(vWorldPos - uCamPos);
-
-    float h = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 gradDay   = mix(bottomDay,  topDay,   h);
-    vec3 gradNight = mix(bottomNight, topNight, h);
-    vec3 baseCol   = mix(gradNight, gradDay, sunUp);
-
-    float sunMask  = softDisc(dir, sunDir,  sunSize,  sunSoftness);
-    vec3  sunCol   = vec3(1.0, 0.92, 0.75) * sunIntensity * sunMask;
-
-    float moonMask = softDisc(dir, moonDir, moonSize, moonSoftness);
-    vec3  moonCol  = vec3(0.8, 0.9, 1.0)   * moonIntensity * moonMask;
-
-    float t = 1.0 - smoothstep(0.0, uHorizonWidth, max(dir.y, 0.0));
-    t = pow(t, uHorizonPower);
-    float dens = uFogDensity * (uFogHeight * 0.02);
-    float fogAmt = 1.0 - exp(-t * dens * 4.0);
-    fogAmt = clamp(fogAmt, 0.0, 1.0);
-
-    vec3 fogged = mix(uFogColor, baseCol, 1.0 - fogAmt);
-
-    gl_FragColor = vec4(fogged + sunCol + moonCol, 1.0);
-  }
+// 1) world position
+THREE.ShaderChunk.fog_pars_vertex = `
+#ifdef USE_FOG
+  varying vec3 vWorldPosition;
+#endif
+`;
+THREE.ShaderChunk.fog_vertex = `
+#ifdef USE_FOG
+  vWorldPosition = worldPosition.xyz;
+#endif
 `;
 
+// 2) uniform + noise
+THREE.ShaderChunk.fog_pars_fragment = NOISE_GLSL + `
+#ifdef USE_FOG
+  uniform float fogTime;
+  uniform vec3 fogColor;
+  varying vec3 vWorldPosition;
+  #ifdef FOG_EXP2
+    uniform float fogDensity;
+  #else
+    uniform float fogNear;
+    uniform float fogFar;
+  #endif
+#endif
+`;
+
+// 3) formula (parametri come la repo)
+THREE.ShaderChunk.fog_fragment = `
+#ifdef USE_FOG
+  vec3 fogOrigin = cameraPosition;
+  vec3 dir = normalize(vWorldPosition - fogOrigin);
+  float dist = distance(vWorldPosition, fogOrigin);
+
+  // scala/velocità come repo
+  vec3 sampleP = vWorldPosition * 0.00025 + vec3(0.0, 0.0, fogTime * 0.025);
+  float n = FBM(sampleP + FBM(sampleP)); n = n*0.5 + 0.5;
+
+  dist *= mix(n, 1.0, clamp((dist - 5000.0)/5000.0, 0.0, 1.0));
+  dist *= dist;
+
+  float y = dir.y; if(abs(y) < 1e-4) y = (y < 0.0 ? -1.0 : 1.0)*1e-4;
+  float heightFactor = 0.05;
+  float fogFactor = heightFactor * exp(-fogOrigin.y * fogDensity) *
+                    (1.0 - exp(-dist * y * fogDensity)) / y;
+
+  fogFactor = clamp(fogFactor, 0.0, 1.0);
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, fogFactor);
+#endif
+`;
+
+// aggancia uniform fogTime ai materiali
+function attachFogTo(root){
+  root.traverse?.((child)=>{
+    const mat = child.material; if(!mat) return;
+    const mats = Array.isArray(mat) ? mat : [mat];
+    mats.forEach(m=>{
+      m.fog = true;
+      const prev = m.onBeforeCompile;
+      m.onBeforeCompile = (shader)=>{
+        prev?.(shader);
+        shader.uniforms.fogTime = { value: 0.0 };
+        _fogShaders.add(shader);
+      };
+      m.needsUpdate = true;
+    });
+  });
+}
+
+/* ================== App ================== */
 init();
 animate();
 
-function init() {
+function init(){
+  // SCENA
   scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x87a0c0);
 
-  camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 5000);
-  camera.position.set(0, 6, 16);
-  camera.lookAt(0, 0, 0);
+  // CAMERA (far grande + camera alta)
+  camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 20000);
+  camera.position.set(0, 20, 120);   // un po’ più indietro per percepire il tappeto
+  camera.updateProjectionMatrix();
 
+  // RENDERER
   renderer = new THREE.WebGLRenderer({
     canvas: document.getElementById('game-canvas'),
     antialias: true
   });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.1;
-  renderer.setClearColor(0x000000, 1);
+  renderer.toneMappingExposure = 1.05;
+  renderer.shadowMap.enabled = true;
 
-  // Lights
-  ambient = new THREE.AmbientLight(0xffffff, 0.2);
+  // LUCI
+  ambient = new THREE.AmbientLight(0xffffff, 0.35);
   scene.add(ambient);
-
-  sun = new THREE.DirectionalLight(PALETTE.day.sunColor, 1.2);
+  sun = new THREE.DirectionalLight(0xffe6b3, 1.0);
+  sun.position.set(60, 120, 80);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);
-  sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 120;
-  sun.shadow.camera.left = -50;
-  sun.shadow.camera.right = 50;
-  sun.shadow.camera.top = 50;
-  sun.shadow.camera.bottom = -50;
   scene.add(sun);
 
-  moon = new THREE.DirectionalLight(0xbfd6ff, 0.0);
-  scene.add(moon);
+  // FOG molto sottile (ordini di grandezza come repo)
+  scene.fog = new THREE.FogExp2(0xDFE9F3, 5e-6);
 
-  hemi = new THREE.HemisphereLight(PALETTE.night.hemiSky, PALETTE.night.hemiGround, PALETTE.night.hemiIntensity);
-  scene.add(hemi);
-
-  // Fog baseline (night)
-  scene.fog = new THREE.FogExp2(PALETTE.night.fogColor, PALETTE.night.fogDensity);
-
-  // Ground (plane + material)
-  const groundGeo = new THREE.PlaneGeometry(200, 200);
-  const groundMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,   // base bianca: la tinta la applichiamo noi
-    roughness: 0.9,
-    metalness: 0.0
-  });
-  ground = new THREE.Mesh(groundGeo, groundMat);
-  ground.rotation.x = -Math.PI / 2;
+  // TERRENO grande
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(20000, 20000, 2, 2),
+    new THREE.MeshStandardMaterial({ color: 0x808080, roughness: 1 })
+  );
+  ground.rotation.x = -Math.PI/2;
   ground.receiveShadow = true;
   scene.add(ground);
 
-  // Carica e applica le texture prato
-  setupGroundTextures();
+  // Qualche oggetto verticale per percepire la stratificazione
+  const matCone = new THREE.MeshStandardMaterial({ color: 0x2e7d32, roughness: 0.7, metalness: 0.0 });
+  for(let i=0;i<60;i++){
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(20, 200, 16), matCone);
+    const r = 1200 + Math.random()*1800;
+    const a = Math.random()*Math.PI*2;
+    cone.position.set(Math.cos(a)*r, 100, Math.sin(a)*r);
+    cone.castShadow = true;
+    scene.add(cone);
+  }
 
-  // Test box
-  const testBox = new THREE.Mesh(
-    new THREE.BoxGeometry(2, 2, 2),
-    new THREE.MeshStandardMaterial({ color: 0x8aa37b })
-  );
-  testBox.position.set(0, 1, 0);
-  testBox.castShadow = true;
-  scene.add(testBox);
+  // tre box come nel test
+  const makeBox = (z, h=50, col=0x9db385)=>{
+    const m = new THREE.MeshStandardMaterial({ color: col, roughness: 0.8, metalness: 0.1 });
+    const b = new THREE.Mesh(new THREE.BoxGeometry(60, h, 60), m);
+    b.position.set(0, h/2, z);
+    b.castShadow = true;
+    scene.add(b);
+  };
+  makeBox(-300, 80, 0xb9d097);
+  makeBox(-900, 120, 0x9db385);
+  makeBox(-1800, 200, 0x7f956c);
 
-  // Orbit controls
+  // collega la fog procedurale
+  attachFogTo(scene);
+
+  // CONTROLS
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.05;
-  controls.target.set(0, 1, 0);
+  controls.target.set(0, 60, -600);
 
-  // === Skydome ===
-  const skyGeo = new THREE.SphereGeometry(1000, 48, 32);
-  skyMat = new THREE.ShaderMaterial({
-    vertexShader: SKY_VERT,
-    fragmentShader: SKY_FRAG,
-    side: THREE.BackSide,
-    depthWrite: false,
-    depthTest: false,
-    fog: false,
-    uniforms: {
-      topDay:       { value: SKY_DAY_TOP.clone() },
-      bottomDay:    { value: SKY_DAY_BOTTOM.clone() },
-      topNight:     { value: SKY_NIGHT_TOP.clone() },
-      bottomNight:  { value: SKY_NIGHT_BOTTOM.clone() },
-      sunDir:       { value: new THREE.Vector3(0,1,0) },
-      moonDir:      { value: new THREE.Vector3(0,-1,0) },
-      sunUp:        { value: 0.0 },
-      sunSize:      { value: 0.07 },
-      sunSoftness:  { value: 0.03 },
-      sunIntensity: { value: 1.5 },
-      moonSize:     { value: 0.05 },
-      moonSoftness: { value: 0.03 },
-      moonIntensity:{ value: 1.0 },
-      uFogColor:    { value: new THREE.Color(scene.fog.color) },
-      uFogDensity:  { value: scene.fog.density * FogPreset.densityBoost * FogPreset.multiplier },
-      uFogHeight:   { value: FogPreset.heightNight },
-      uCamPos:      { value: new THREE.Vector3() },
-      uHorizonWidth:{ value: FogPreset.horizonWidth },
-      uHorizonPower:{ value: FogPreset.horizonPower }
-    }
-  });
-  skyDome = new THREE.Mesh(skyGeo, skyMat);
-  skyDome.renderOrder = -9999;
-  scene.add(skyDome);
-
-  // Resize + UI
+  // UI
+  setupDebug();
   addEventListener('resize', onResize);
-  setupLiveTuning();
-  setLightingMood('night');
-  setupPresetKeys();
-  setupTimeKeys();
-  setupTilingKeys();
-  setupTintKey();            // <— toggle T
-  updateDebugUI();
 }
 
-// ====== TEXTURE GROUND ======
-function setupGroundTextures(){
-  const loader   = new THREE.TextureLoader();
-  const maxAniso = renderer.capabilities.getMaxAnisotropy?.() ?? 8;
-
-  const map = loader.load(TEX_BASE + 'Grass002_4K_Color.jpg');
-  map.colorSpace = THREE.SRGBColorSpace;
-  map.wrapS = map.wrapT = THREE.RepeatWrapping;
-  map.anisotropy = maxAniso;
-
-  const normalMap = loader.load(TEX_BASE + 'Grass002_4K_NormalGL.jpg');
-  normalMap.wrapS = normalMap.wrapT = THREE.RepeatWrapping;
-  normalMap.anisotropy = maxAniso;
-
-  const roughnessMap = loader.load(TEX_BASE + 'Grass002_4K_Roughness.jpg');
-  roughnessMap.wrapS = roughnessMap.wrapT = THREE.RepeatWrapping;
-  roughnessMap.anisotropy = maxAniso;
-
-  const aoMap = loader.load(TEX_BASE + 'Grass002_4K_AmbientOcclusion.jpg');
-  aoMap.wrapS = aoMap.wrapT = THREE.RepeatWrapping;
-  aoMap.anisotropy = maxAniso;
-
-  const TILE = _dbg.tile;
-  map.repeat.set(TILE, TILE);
-  normalMap.repeat.set(TILE, TILE);
-  roughnessMap.repeat.set(TILE, TILE);
-  aoMap.repeat.set(TILE, TILE);
-
-  ground.material.map = map;
-  ground.material.normalMap = normalMap;
-  ground.material.roughnessMap = roughnessMap;
-  ground.material.aoMap = aoMap;
-  ground.material.aoMapIntensity = 1.0;
-  ground.material.roughness = 1.0;
-  ground.material.metalness = 0.0;
-  ground.material.needsUpdate = true;
-
-  // AO richiede uv2
-  if (!ground.geometry.getAttribute('uv2')) {
-    ground.geometry.setAttribute('uv2', ground.geometry.getAttribute('uv'));
-  }
-}
-
-function applyTiling(n){
-  const m = ground.material;
-  if (m.map) m.map.repeat.set(n, n);
-  if (m.normalMap) m.normalMap.repeat.set(n, n);
-  if (m.roughnessMap) m.roughnessMap.repeat.set(n, n);
-  if (m.aoMap) m.aoMap.repeat.set(n, n);
-  _dbg.tile = n;
-}
-
-// Apply palette instantly (for N/M toggles only)
-function setLightingMood(mode) {
-  const p = PALETTE[mode];
-  if (!p) return;
-
-  if (!scene.fog) scene.fog = new THREE.FogExp2(p.fogColor, p.fogDensity);
-  scene.fog.color.setHex(p.fogColor);
-  scene.fog.density = p.fogDensity;
-
-  ambient.color.setHex(p.ambientColor);
-  ambient.intensity = p.ambientIntensity;
-
-  sun.color.setHex(p.sunColor);
-  sun.intensity = p.sunIntensity;
-
-  hemi.color.setHex(p.hemiSky);
-  hemi.groundColor.setHex(p.hemiGround);
-  hemi.intensity = p.hemiIntensity;
-
-  renderer.toneMappingExposure = p.exposure;
-
-  // colore base lasciato a bianco, la tinta è gestita in updateDayNight()
-  ground.material.color.set(0xffffff);
-}
-
-// Helpers
-function smooth01(x, a, b){
-  const t = THREE.MathUtils.clamp((x - a) / Math.max(1e-5, (b - a)), 0, 1);
-  return t * t * (3 - 2 * t);
-}
-
-// Day–Night animation
-function updateDayNight(timeSec) {
-  const phase = (timeSec % DAY_LENGTH) / DAY_LENGTH;
-  const ang   = phase * Math.PI * 2;
-
-  sun.position.set(Math.cos(ang) * SKY_RADIUS,  Math.sin(ang) * SKY_RADIUS,  0);
-  moon.position.set(Math.cos(ang + Math.PI) * SKY_RADIUS, Math.sin(ang + Math.PI) * SKY_RADIUS, 0);
-
-  const sunUp  = Math.max(0, Math.sin(ang));
-  const moonUp = Math.max(0, Math.sin(ang + Math.PI));
-
-  sun.intensity  = THREE.MathUtils.lerp(0.0, PALETTE.day.sunIntensity,   sunUp);
-  moon.intensity = THREE.MathUtils.lerp(0.0, PALETTE.night.sunIntensity, moonUp);
-
-  const wAmb = smooth01(sunUp, 0.05, 0.35);
-  const wExp = smooth01(sunUp, 0.15, 0.70);
-  const wFog = smooth01(sunUp, 0.20, 0.80);
-
-  ambient.intensity = THREE.MathUtils.lerp(PALETTE.night.ambientIntensity, PALETTE.day.ambientIntensity, wAmb);
-  ambient.color.lerpColors(new THREE.Color(PALETTE.night.ambientColor), new THREE.Color(PALETTE.day.ambientColor), wAmb);
-
-  const fogColNight = new THREE.Color(PALETTE.night.fogColor);
-  const fogColDay   = new THREE.Color(PALETTE.day.fogColor);
-  scene.fog.color.lerpColors(fogColNight, fogColDay, wFog);
-  scene.fog.density = THREE.MathUtils.lerp(PALETTE.night.fogDensity, PALETTE.day.fogDensity, wFog);
-
-  renderer.toneMappingExposure = THREE.MathUtils.lerp(PALETTE.night.exposure, PALETTE.day.exposure, wExp);
-
-  hemi.intensity = THREE.MathUtils.lerp(PALETTE.night.hemiIntensity, PALETTE.day.hemiIntensity, wAmb);
-  hemi.color.lerpColors(new THREE.Color(PALETTE.night.hemiSky), new THREE.Color(PALETTE.day.hemiSky), wAmb);
-  hemi.groundColor.lerpColors(new THREE.Color(PALETTE.night.hemiGround), new THREE.Color(PALETTE.day.hemiGround), wAmb);
-
-  // ---------- TINTA LEGGERA DEL TERRENO ----------
-  const nightTint = new THREE.Color(PALETTE.night.groundColor);
-  const dayTint   = new THREE.Color(PALETTE.day.groundColor);
-  const paletteTint = nightTint.lerp(dayTint, wAmb); // tinta palette
-  // misceliamo verso il bianco in base a TINT_STRENGTH
-  const finalTint = paletteTint.clone().lerp(new THREE.Color(0xffffff), 1 - TINT_STRENGTH);
-  ground.material.color.copy(finalTint);
-
-  // Skydome uniforms
-  const sunDir  = new THREE.Vector3(Math.cos(ang), Math.sin(ang), 0).normalize();
-  const moonDir = new THREE.Vector3(Math.cos(ang + Math.PI), Math.sin(ang + Math.PI), 0).normalize();
-
-  if (skyMat) {
-    skyMat.uniforms.sunDir.value.copy(sunDir);
-    skyMat.uniforms.moonDir.value.copy(moonDir);
-    skyMat.uniforms.sunUp.value = sunUp;
-    skyMat.uniforms.sunIntensity.value  = THREE.MathUtils.lerp(0.0, 1.5, sunUp);
-    skyMat.uniforms.moonIntensity.value = THREE.MathUtils.lerp(1.0, 0.0, sunUp);
-
-    skyMat.uniforms.uFogColor.value.copy(scene.fog.color);
-    const skyDensity = scene.fog.density * FogPreset.densityBoost * FogPreset.multiplier;
-    const skyHeight  = THREE.MathUtils.lerp(FogPreset.heightNight, FogPreset.heightDay, wFog);
-    skyMat.uniforms.uFogDensity.value = skyDensity;
-    skyMat.uniforms.uFogHeight.value  = skyHeight;
-
-    skyMat.uniforms.uHorizonWidth.value = FogPreset.horizonWidth;
-    skyMat.uniforms.uHorizonPower.value = FogPreset.horizonPower;
-
-    _dbg.uFogD = skyDensity;
-    _dbg.uFogH = skyHeight;
-  }
-
-  _dbg.sunUp = sunUp; _dbg.wAmb = wAmb; _dbg.wExp = wExp; _dbg.wFog = wFog;
-}
-
-// Preset keys (F1–F3)
-function setupPresetKeys(){
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'F1') {
-      FogPreset.multiplier = 0.8;
-      FogPreset.densityBoost = 10.0;
-      FogPreset.heightDay = 60.0; FogPreset.heightNight = 40.0;
-      FogPreset.horizonWidth = 0.28; FogPreset.horizonPower = 1.2;
-    }
-    if (e.key === 'F2') {
-      FogPreset.multiplier = 1.2;
-      FogPreset.densityBoost = 12.0;
-      FogPreset.heightDay = 55.0; FogPreset.heightNight = 35.0;
-      FogPreset.horizonWidth = 0.32; FogPreset.horizonPower = 1.4;
-    }
-    if (e.key === 'F3') {
-      FogPreset.multiplier = 1.6;
-      FogPreset.densityBoost = 14.0;
-      FogPreset.heightDay = 50.0; FogPreset.heightNight = 30.0;
-      FogPreset.horizonWidth = 0.36; FogPreset.horizonPower = 1.6;
-    }
-  });
-}
-
-// Time keys (P/U/O/Y/I/R)
-function setupTimeKeys(){
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'p' || e.key === 'P') timeScale = (timeScale === 0 ? 1 : 0);
-    if (e.key === 'u' || e.key === 'U') manualPhase = 0.00;
-    if (e.key === 'o' || e.key === 'O') manualPhase = 0.25;
-    if (e.key === 'y' || e.key === 'Y') manualPhase = 0.50;
-    if (e.key === 'i' || e.key === 'I') manualPhase = 0.75;
-    if (e.key === 'r' || e.key === 'R') manualPhase = null;
-  });
-}
-
-// Tiling keys (',' and '.')
-function setupTilingKeys(){
-  window.addEventListener('keydown', (e) => {
-    if (!ground || !ground.material) return;
-    if (e.key === ',' || e.key === '<') {
-      _dbg.tile = Math.max(1, Math.round(_dbg.tile * 0.8));
-      applyTiling(_dbg.tile);
-    }
-    if (e.key === '.' || e.key === '>') {
-      _dbg.tile = Math.min(256, Math.round(_dbg.tile * 1.25));
-      applyTiling(_dbg.tile);
-    }
-  });
-}
-
-// Toggle TINT (T)
-function setupTintKey(){
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 't' || e.key === 'T') {
-      TINT_STRENGTH = (TINT_STRENGTH > 0 ? 0 : 0.35);
-      updateDebugUI();
-      console.log('TINT_STRENGTH =', TINT_STRENGTH);
-    }
-  });
-}
-
-// Render loop
-function animate() {
+function animate(){
   requestAnimationFrame(animate);
 
-  if (skyDome) skyDome.position.copy(camera.position);
-  if (skyMat)  skyMat.uniforms.uCamPos.value.copy(camera.position);
+  // anima (o ferma) la foschia
+  const t = performance.now() * 0.001;
+  _fogShaders.forEach(s => { s.uniforms.fogTime.value = animateFog ? t : 0.0; });
 
-  const elapsed = (performance.now() - startTime) / 1000;
-  const t = (manualPhase !== null) ? manualPhase * DAY_LENGTH : elapsed * timeScale;
-
-  updateDayNight(t);
-  updateDebugUI();
   controls.update();
   renderer.render(scene, camera);
+  updateDebug();
 }
 
-function onResize() {
-  camera.aspect = innerWidth / innerHeight;
+function onResize(){
+  camera.aspect = innerWidth/innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 }
 
-/* ---------- Debug overlay ---------- */
-function setupLiveTuning() {
+/* ---------------- UI ---------------- */
+function setupDebug(){
   debugEl = document.createElement('div');
-  debugEl.id = 'debug-look';
   debugEl.style.cssText = `
     position:fixed; left:8px; bottom:8px; z-index:9999;
-    color:#9fb6d1; background:#0008; padding:6px 8px; border-radius:6px;
-    font:12px/1.3 monospace; user-select:none; pointer-events:none;
-    white-space:pre;
-  `;
+    color:#dfe8f3; background:#0008; padding:6px 8px; border-radius:6px;
+    font:12px/1.35 monospace; user-select:none; pointer-events:none; white-space:pre;`;
   document.body.appendChild(debugEl);
 
-  addEventListener('keydown', (ev) => {
-    let changed = true;
-    switch (ev.key) {
-      case '[': scene.fog.density = clamp(scene.fog.density - 0.001, 0.005, 0.05); break;
-      case ']': scene.fog.density = clamp(scene.fog.density + 0.001, 0.005, 0.05); break;
-      case '-': renderer.toneMappingExposure = clamp(renderer.toneMappingExposure - 0.05, 0.5, 2.0); break;
+  addEventListener('keydown', (e)=>{
+    switch(e.key){
+      case '[': scene.fog.density = clamp(scene.fog.density - 1e-6, 0, 1); break;
+      case ']': scene.fog.density = clamp(scene.fog.density + 1e-6, 0, 1); break;
+      case '-': renderer.toneMappingExposure = clamp(renderer.toneMappingExposure - 0.05, 0.2, 3.0); break;
       case '=':
-      case '+': renderer.toneMappingExposure = clamp(renderer.toneMappingExposure + 0.05, 0.5, 2.0); break;
-      case '1': ambient.intensity = clamp(ambient.intensity - 0.02, 0.0, 1.0); break;
-      case '2': ambient.intensity = clamp(ambient.intensity + 0.02, 0.0, 1.0); break;
-      case '3': sun.intensity = clamp(sun.intensity - 0.05, 0.0, 3.0); break;
-      case '4': sun.intensity = clamp(sun.intensity + 0.05, 0.0, 3.0); break;
-      default: changed = false;
+      case '+': renderer.toneMappingExposure = clamp(renderer.toneMappingExposure + 0.05, 0.2, 3.0); break;
+      case 'a':
+      case 'A': animateFog = !animateFog; break; // toggle animazione
     }
-    if (changed) updateDebugUI();
   });
 }
 
-function updateDebugUI() {
-  if (!debugEl) return;
+function updateDebug(){
+  if(!debugEl) return;
   debugEl.textContent =
-    `fog: ${scene.fog.density.toFixed(3)} | exp: ${renderer.toneMappingExposure.toFixed(2)} | ` +
-    `amb: ${ambient.intensity.toFixed(2)} | sun: ${sun.intensity.toFixed(2)} | tile: ${_dbg.tile} | tint: ${TINT_STRENGTH.toFixed(2)}\n` +
-    `sunUp: ${_dbg.sunUp.toFixed(2)} | wAmb: ${_dbg.wAmb.toFixed(2)} | wExp: ${_dbg.wExp.toFixed(2)} | wFog: ${_dbg.wFog.toFixed(2)}\n` +
-    `sky uFogDensity: ${_dbg.uFogD.toFixed(4)} | sky uFogHeight: ${_dbg.uFogH.toFixed(1)}\n` +
-    `[N]/[M] palette | time: [P] pause  [U]/[O]/[Y]/[I]/[R] jump | fog: [ ]  - = | ambient 1/2 | sun 3/4 | tiling ,/. | T tint | Presets F1/F2/F3`;
+    `FogExp2+FBM density: ${scene.fog?.density.toExponential(2)}  |  ` +
+    `Exposure: ${renderer.toneMappingExposure.toFixed(2)}  |  ` +
+    `shaders:${_fogShaders.size}  |  anim:${animateFog?'ON':'OFF'}\n` +
+    `Keys: [ / ] fog  |  - / = exposure  |  A anim  |  orbit drag`;
 }
 
-function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
+function clamp(x,a,b){ return Math.max(a, Math.min(b, x)); }
+
+
+
+// // updated con nebbia funziona + step 3 
+
+// // ===== Three.js core & controls (your originals) =====
+// import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+// import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+// // ===== Forest system (local modules from the skeleton) =====
+// import { TreeCatalog } from './assets/TreeCatalog.js';
+// import { ForestSystem } from './systems/ForestSystem.js';
+
+// let scene, camera, renderer, controls;
+// let ambient, sun;
+// let debugEl;
+// let animateFog = true;       // [A] per ON/OFF
+// const _fogShaders = new Set();
+
+// /* ================== Procedural fog chunks (FBM) ================== */
+// const NOISE_GLSL = `
+// vec3 mod289(vec3 x){return x - floor(x*(1.0/289.0))*289.0;}
+// vec4 mod289(vec4 x){return x - floor(x*(1.0/289.0))*289.0;}
+// vec4 permute(vec4 x){return mod289(((x*34.0)+1.0)*x);}
+// vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
+// float snoise(vec3 v){
+//   const vec2 C=vec2(1.0/6.0,1.0/3.0); const vec4 D=vec4(0.0,0.5,1.0,2.0);
+//   vec3 i=floor(v+dot(v,C.yyy)); vec3 x0=v-i+dot(i,C.xxx);
+//   vec3 g=step(x0.yzx,x0.xyz); vec3 l=1.0-g; vec3 i1=min(g.xyz,l.zxy); vec3 i2=max(g.xyz,l.zxy);
+//   vec3 x1=x0-i1+C.xxx; vec3 x2=x0-i2+C.yyy; vec3 x3=x0-D.yyy; i=mod289(i);
+//   vec4 p=permute(permute(permute(i.z+vec4(0.0,i1.z,i2.z,1.0))+i.y+vec4(0.0,i1.y,i2.y,1.0))+i.x+vec4(0.0,i1.x,i2.x,1.0));
+//   float n_=0.142857142857; vec3 ns=n_*D.wyz - D.xzx;
+//   vec4 j=p-49.0*floor(p*ns.z*ns.z); vec4 x_=floor(j*ns.z); vec4 y_=floor(j-7.0*x_);
+//   vec4 x=x_*ns.x+ns.yyyy; vec4 y=y_*ns.x+ns.yyyy; vec4 h=1.0-abs(x)-abs(y);
+//   vec4 b0=vec4(x.xy,y.xy); vec4 b1=vec4(x.zw,y.zw); vec4 s0=floor(b0)*2.0+1.0; vec4 s1=floor(b1)*2.0+1.0; vec4 sh=-step(h,vec4(0.0));
+//   vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy; vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+//   vec3 p0=vec3(a0.xy,h.x); vec3 p1=vec3(a0.zw,h.y); vec3 p2=vec3(a1.xy,h.z); vec3 p3=vec3(a1.zw,h.w);
+//   vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
+//   p0*=norm.x; p1*=norm.y; p2*=norm.z; p3*=norm.w;
+//   vec4 m=max(0.5-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.0); m=m*m;
+//   return 105.0*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
+// }
+// float FBM(vec3 p){ float v=0.0,a=0.5; for(int i=0;i<6;i++){ v+=a*snoise(p); p*=2.0; a*=0.5; } return v; }
+// `;
+
+// // 1) world position
+// THREE.ShaderChunk.fog_pars_vertex = `
+// #ifdef USE_FOG
+//   varying vec3 vWorldPosition;
+// #endif
+// `;
+// THREE.ShaderChunk.fog_vertex = `
+// #ifdef USE_FOG
+//   vWorldPosition = worldPosition.xyz;
+// #endif
+// `;
+
+// // 2) uniform + noise
+// THREE.ShaderChunk.fog_pars_fragment = NOISE_GLSL + `
+// #ifdef USE_FOG
+//   uniform float fogTime;
+//   uniform vec3 fogColor;
+//   varying vec3 vWorldPosition;
+//   #ifdef FOG_EXP2
+//     uniform float fogDensity;
+//   #else
+//     uniform float fogNear;
+//     uniform float fogFar;
+//   #endif
+// #endif
+// `;
+
+// // 3) formula (parametri come la repo)
+// THREE.ShaderChunk.fog_fragment = `
+// #ifdef USE_FOG
+//   vec3 fogOrigin = cameraPosition;
+//   vec3 dir = normalize(vWorldPosition - fogOrigin);
+//   float dist = distance(vWorldPosition, fogOrigin);
+
+//   // scala/velocità come repo
+//   vec3 sampleP = vWorldPosition * 0.00025 + vec3(0.0, 0.0, fogTime * 0.025);
+//   float n = FBM(sampleP + FBM(sampleP)); n = n*0.5 + 0.5;
+
+//   dist *= mix(n, 1.0, clamp((dist - 5000.0)/5000.0, 0.0, 1.0));
+//   dist *= dist;
+
+//   float y = dir.y; if(abs(y) < 1e-4) y = (y < 0.0 ? -1.0 : 1.0)*1e-4;
+//   float heightFactor = 0.05;
+//   float fogFactor = heightFactor * exp(-fogOrigin.y * fogDensity) *
+//                     (1.0 - exp(-dist * y * fogDensity)) / y;
+
+//   fogFactor = clamp(fogFactor, 0.0, 1.0);
+//   gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, fogFactor);
+// #endif
+// `;
+
+// // aggancia uniform fogTime ai materiali
+// function attachFogTo(root){
+//   root.traverse?.((child)=>{
+//     const mat = child.material; if(!mat) return;
+//     const mats = Array.isArray(mat) ? mat : [mat];
+//     mats.forEach(m=>{
+//       m.fog = true;
+//       const prev = m.onBeforeCompile;
+//       m.onBeforeCompile = (shader)=>{
+//         prev?.(shader);
+//         shader.uniforms.fogTime = { value: 0.0 };
+//         _fogShaders.add(shader);
+//       };
+//       m.needsUpdate = true;
+//     });
+//   });
+// }
+
+// /* ================== App ================== */
+// init();
+// animate();
+
+// async function init(){
+//   // SCENA
+//   scene = new THREE.Scene();
+//   scene.background = new THREE.Color(0x87a0c0);
+
+//   // CAMERA (far grande + camera alta)
+//   camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 20000);
+//   camera.position.set(0, 20, 120);
+//   camera.updateProjectionMatrix();
+
+//   // RENDERER
+//   renderer = new THREE.WebGLRenderer({
+//     canvas: document.getElementById('game-canvas'),
+//     antialias: true
+//   });
+//   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+//   renderer.setSize(innerWidth, innerHeight);
+//   renderer.outputColorSpace = THREE.SRGBColorSpace;
+//   renderer.toneMapping = THREE.ACESFilmicToneMapping;
+//   renderer.toneMappingExposure = 1.05;
+//   renderer.shadowMap.enabled = true;
+
+//   // LUCI
+//   ambient = new THREE.AmbientLight(0xffffff, 0.35);
+//   scene.add(ambient);
+//   sun = new THREE.DirectionalLight(0xffe6b3, 1.0);
+//   sun.position.set(60, 120, 80);
+//   sun.castShadow = true;
+//   scene.add(sun);
+
+//   // FOG molto sottile (ordini di grandezza come repo)
+//   scene.fog = new THREE.FogExp2(0xDFE9F3, 5e-6);
+
+//   // TERRENO grande
+//   const ground = new THREE.Mesh(
+//     new THREE.PlaneGeometry(20000, 20000, 2, 2),
+//     new THREE.MeshStandardMaterial({ color: 0x808080, roughness: 1 })
+//   );
+//   ground.rotation.x = -Math.PI/2;
+//   ground.receiveShadow = true;
+//   scene.add(ground);
+
+//   // Collegare la fog procedurale
+//   attachFogTo(scene);
+
+//   // CONTROLS
+//   controls = new OrbitControls(camera, renderer.domElement);
+//   controls.enableDamping = true;
+//   controls.dampingFactor = 0.05;
+//   controls.target.set(0, 60, -600);
+
+//   // --- FOREST: load OBJ trees & populate ---
+//   await setupForest(scene);
+
+//   // UI
+//   setupDebug();
+//   addEventListener('resize', onResize);
+// }
+
+// function animate(){
+//   requestAnimationFrame(animate);
+
+//   // anima (o ferma) la foschia
+//   const t = performance.now() * 0.001;
+//   _fogShaders.forEach(s => { s.uniforms.fogTime.value = animateFog ? t : 0.0; });
+
+//   controls.update();
+//   renderer.render(scene, camera);
+//   updateDebug();
+// }
+
+// function onResize(){
+//   camera.aspect = innerWidth/innerHeight;
+//   camera.updateProjectionMatrix();
+//   renderer.setSize(innerWidth, innerHeight);
+// }
+
+// /* ================== Forest bootstrap ================== */
+// async function setupForest(scene) {
+//   const catalog = new TreeCatalog();
+
+//   // Preload your tree types (adjust paths/colors/scales to your models)
+//   await catalog.load('pine', '/assets/trees/pine.obj', { defaultColor: 0x2e7d32, scale: 1.0 });
+//   // await catalog.load('oak',  '/assets/trees/oak.obj',  { defaultColor: 0x35682d, scale: 1.0 });
+
+//   const forest = new ForestSystem(scene, {
+//     seed: 2025,
+//     innerRadius: 80,
+//     outerRadius: 1800,
+//     minSpacing: 8,
+//     maxSpacing: 12,
+//     count: 800,
+//     scale: [0.85, 1.25],
+//     clearings: [ { x:0, z:0, r: 100 } ],
+//     types: [
+//       { name: 'pine', url: '/assets/trees/pine.obj', occluderHeight: 140, occluderRadiusScale: 0.42 },
+//       // { name: 'oak',  url: '/assets/trees/oak.obj',  occluderHeight: 160, occluderRadiusScale: 0.45 },
+//     ],
+//   }, catalog);
+
+//   const result = await forest.generate();
+//   console.log('Forest ready:', result);
+//   // Keep a reference for later (LOS, cleanup, etc.)
+//   window.forest = forest;
+// }
+
+// /* ---------------- UI ---------------- */
+// function setupDebug(){
+//   debugEl = document.createElement('div');
+//   debugEl.style.cssText = `
+//     position:fixed; left:8px; bottom:8px; z-index:9999;
+//     color:#dfe8f3; background:#0008; padding:6px 8px; border-radius:6px;
+//     font:12px/1.35 monospace; user-select:none; pointer-events:none; white-space:pre;`;
+//   document.body.appendChild(debugEl);
+
+//   addEventListener('keydown', (e)=>{
+//     switch(e.key){
+//       case '[': scene.fog.density = clamp(scene.fog.density - 1e-6, 0, 1); break;
+//       case ']': scene.fog.density = clamp(scene.fog.density + 1e-6, 0, 1); break;
+//       case '-': renderer.toneMappingExposure = clamp(renderer.toneMappingExposure - 0.05, 0.2, 3.0); break;
+//       case '=':
+//       case '+': renderer.toneMappingExposure = clamp(renderer.toneMappingExposure + 0.05, 0.2, 3.0); break;
+//       case 'a':
+//       case 'A': animateFog = !animateFog; break; // toggle animazione
+//     }
+//   });
+// }
+
+// function updateDebug(){
+//   if(!debugEl) return;
+//   debugEl.textContent =
+//     `FogExp2+FBM density: ${scene.fog?.density.toExponential(2)}  |  ` +
+//     `Exposure: ${renderer.toneMappingExposure.toFixed(2)}  |  ` +
+//     `shaders:${_fogShaders.size}  |  anim:${animateFog?'ON':'OFF'}\n` +
+//     `Keys: [ / ] fog  |  - / = exposure  |  A anim  |  orbit drag`;
+// }
+
+// function clamp(x,a,b){ return Math.max(a, Math.min(b, x)); }
+
+
+// import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+// import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+// import { OBJLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/OBJLoader.js';
+// import { MTLLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/MTLLoader.js';
+// import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
+
+// const canvas   = document.getElementById('game-canvas');
+// const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+// renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+// renderer.setSize(innerWidth, innerHeight);
+// renderer.outputColorSpace = THREE.SRGBColorSpace;
+// renderer.toneMapping = THREE.ACESFilmicToneMapping;
+// renderer.toneMappingExposure = 1.1;
+
+// const scene = new THREE.Scene();
+// scene.background = new THREE.Color(0x1e1f24);
+
+// const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.01, 1000);
+// camera.position.set(0, 1.5, 3);
+
+// const controls = new OrbitControls(camera, renderer.domElement);
+// controls.enableDamping = true;
+
+// // luci chiare (mantienile!)
+// scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+// scene.add(new THREE.HemisphereLight(0xffffff, 0x2a3038, 0.6));
+// const dir = new THREE.DirectionalLight(0xffffff, 0.8); dir.position.set(2,3,2); scene.add(dir);
+
+// scene.add(new THREE.GridHelper(10, 10, 0x444444, 0x333333));
+// scene.add(new THREE.AxesHelper(1));
+
+// let model, savedMaterials = new Map();
+
+// // === carica qualsiasi formato (OBJ/MTL o GLB) ===
+// async function loadAny(url, mtlUrl) {
+//   const lower = url.toLowerCase();
+//   let root;
+//   try {
+//     if (lower.endsWith('.glb') || lower.endsWith('.gltf')) {
+//       const gltf = await new GLTFLoader().loadAsync(url);
+//       root = gltf.scene;
+//     } else {
+//       const loader = new OBJLoader();
+//       if (mtlUrl) {
+//         const mtl = await new MTLLoader().loadAsync(mtlUrl);
+//         mtl.preload(); loader.setMaterials(mtl);
+//       }
+//       root = await loader.loadAsync(url);
+//     }
+//   } catch (e) {
+//     console.error('Load error:', e);
+//     return;
+//   }
+
+//   // assicurati che i materiali si vedano
+//   root.traverse(o => {
+//     if (o.isMesh) {
+//       o.castShadow = o.receiveShadow = true;
+//       if (o.material) o.material.side = THREE.DoubleSide;
+//     }
+//   });
+
+//   // centra + normalizza scala ~2 unità
+//   const box = new THREE.Box3().setFromObject(root);
+//   const size = box.getSize(new THREE.Vector3());
+//   const center = box.getCenter(new THREE.Vector3());
+//   root.position.sub(center);
+//   const maxDim = Math.max(size.x, size.y, size.z) || 1;
+//   const TARGET = 2.0;
+//   const s = TARGET / maxDim;
+//   root.scale.setScalar(s);
+
+//   scene.add(root);
+//   fitToView(root);
+//   model = root;
+//   console.log('Model loaded:', url, 'size:', size, 'scale:', s);
+// }
+
+// // inquadra il modello
+// function fitToView(object) {
+//   const box = new THREE.Box3().setFromObject(object);
+//   const size = box.getSize(new THREE.Vector3());
+//   const maxDim = Math.max(size.x, size.y, size.z) || 1;
+//   const dist = maxDim / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+//   camera.position.set(0, maxDim * 0.3, dist * 1.25);
+//   controls.target.set(0, maxDim * 0.15, 0);
+//   controls.update();
+// }
+
+// // toggle UNLIT (sempre visibile)
+// function setUnlit(on) {
+//   if (!model) return;
+//   model.traverse(o => {
+//     if (!o.isMesh) return;
+//     if (on) {
+//       if (!savedMaterials.has(o.uuid)) savedMaterials.set(o.uuid, o.material);
+//       const src = savedMaterials.get(o.uuid);
+//       o.material = new THREE.MeshBasicMaterial({
+//         map: src?.map || null,
+//         color: (src?.color && src.color.isColor) ? src.color.clone() : new THREE.Color(0xffffff),
+//         side: THREE.DoubleSide
+//       });
+//     } else {
+//       if (savedMaterials.has(o.uuid)) o.material = savedMaterials.get(o.uuid);
+//     }
+//   });
+// }
+
+// // ---- scegli cosa caricare ----
+// // OBJ + MTL
+// loadAny('/assets/textures/trees/again_pine.obj', '/assets/textures/trees/again_pine.mtl');
+
+
+// addEventListener('keydown', (e) => {
+//   if (e.key.toLowerCase() === 'u') { // toggle unlit
+//     const unlit = !model?.userData?.unlit;
+//     setUnlit(unlit);
+//     if (model) model.userData.unlit = unlit;
+//     console.log('Unlit:', unlit);
+//   }
+// });
+
+// addEventListener('resize', () => {
+//   camera.aspect = innerWidth / innerHeight;
+//   camera.updateProjectionMatrix();
+//   renderer.setSize(innerWidth, innerHeight);
+// });
+
+// (function animate(){
+//   requestAnimationFrame(animate);
+//   controls.update();
+//   renderer.render(scene, camera);
+// })();
+
+
+// import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+// import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+// import { OBJLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/OBJLoader.js';
+// import { MTLLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/MTLLoader.js';
+// import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
+
+// const canvas   = document.getElementById('game-canvas');
+// const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+// renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+// renderer.setSize(innerWidth, innerHeight);
+// renderer.outputColorSpace = THREE.SRGBColorSpace;
+// renderer.toneMapping = THREE.ACESFilmicToneMapping;
+// renderer.toneMappingExposure = 1.0;
+
+// const scene = new THREE.Scene();
+// scene.background = new THREE.Color(0x1e2126);
+
+// const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.01, 1000);
+// camera.position.set(0, 1.5, 3);
+
+// const controls = new OrbitControls(camera, renderer.domElement);
+// controls.enableDamping = true;
+
+// /* luci più “soft” da cartoon */
+// scene.add(new THREE.AmbientLight(0xffffff, 0.50));
+// scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x2a3038, 0.45)); // cielo freddo, suolo scuro
+// const dir = new THREE.DirectionalLight(0xffffff, 0.65);
+// dir.position.set(2, 3, 2);
+// scene.add(dir);
+
+// scene.add(new THREE.GridHelper(10, 10, 0x444444, 0x333333));
+// scene.add(new THREE.AxesHelper(1));
+
+// let model;
+
+// /* palette “Animal Crossing” (desaturata e un po’ più scura) */
+// let EMISSIVE_STRENGTH = 0.08; // quasi nullo
+// const LEAF_COLOR  = new THREE.Color('#7FA36B'); // verde foglia soft
+// const TRUNK_COLOR = new THREE.Color('#B28C72'); // legno caldo soft
+// const OTHER_COLOR = new THREE.Color('#BFBFBF');
+
+// function remapToACStyle(root) {
+//   const TRUNK_NAMES  = ['材质'];      // dal tuo .mtl: tronco
+//   const LEAVES_NAMES = ['材质.001'];  // dal tuo .mtl: chioma
+
+//   root.traverse(o => {
+//     if (!o.isMesh) return;
+
+//     const mats = Array.isArray(o.material) ? o.material : [o.material];
+//     const remapped = mats.map(m => {
+//       const n = String(m?.name || '').normalize('NFC');
+//       const isTrunk  = TRUNK_NAMES.includes(n);
+//       const isLeaf   = LEAVES_NAMES.includes(n);
+//       const baseCol  = isLeaf ? LEAF_COLOR : (isTrunk ? TRUNK_COLOR : OTHER_COLOR);
+
+//       const mat = new THREE.MeshStandardMaterial({
+//         color: baseCol.clone(),
+//         roughness: 0.95,
+//         metalness: 0.0,
+//         flatShading: true,
+//         side: THREE.DoubleSide
+//       });
+//       mat.emissive.copy(baseCol).multiplyScalar(0.5);
+//       mat.emissiveIntensity = EMISSIVE_STRENGTH;
+//       return mat;
+//     });
+
+//     o.material = (remapped.length === 1) ? remapped[0] : remapped;
+//   });
+// }
+
+// /* loader */
+// async function loadAny(url, mtlUrl) {
+//   const lower = url.toLowerCase();
+//   let root;
+//   if (lower.endsWith('.glb') || lower.endsWith('.gltf')) {
+//     const gltf = await new GLTFLoader().loadAsync(url);
+//     root = gltf.scene;
+//   } else {
+//     const loader = new OBJLoader();
+//     if (mtlUrl) {
+//       const mtl = await new MTLLoader().loadAsync(mtlUrl);
+//       mtl.preload(); loader.setMaterials(mtl);
+//     }
+//     root = await loader.loadAsync(url);
+//   }
+
+//   // centra + normalizza scala ~2u
+//   const box = new THREE.Box3().setFromObject(root);
+//   const size = box.getSize(new THREE.Vector3());
+//   const center = box.getCenter(new THREE.Vector3());
+//   root.position.sub(center);
+//   const maxDim = Math.max(size.x, size.y, size.z) || 1;
+//   root.scale.setScalar(2.0 / maxDim);
+
+//   remapToACStyle(root);
+
+//   scene.add(root);
+//   fitToView(root);
+//   model = root;
+// }
+
+// function fitToView(object) {
+//   const box = new THREE.Box3().setFromObject(object);
+//   const size = box.getSize(new THREE.Vector3());
+//   const maxDim = Math.max(size.x, size.y, size.z) || 1;
+//   const dist = maxDim / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+//   camera.position.set(0, maxDim * 0.3, dist * 1.25);
+//   controls.target.set(0, maxDim * 0.15, 0);
+//   controls.update();
+// }
+
+// /* carica il tuo OBJ */
+// loadAny('/assets/textures/trees/again_pine.obj', '/assets/textures/trees/again_pine.mtl');
+
+// /* tweak veloce da tastiera: emissive +/- */
+// addEventListener('keydown', (e) => {
+//   if (e.key === '[' || e.key === ']') {
+//     EMISSIVE_STRENGTH = Math.max(0, Math.min(0.4, EMISSIVE_STRENGTH + (e.key === ']' ? +0.02 : -0.02)));
+//     if (model) model.traverse(o => {
+//       if (o.isMesh && o.material && 'emissiveIntensity' in o.material) {
+//         o.material.emissiveIntensity = EMISSIVE_STRENGTH;
+//       }
+//     });
+//     console.log('emissiveIntensity:', EMISSIVE_STRENGTH.toFixed(2));
+//   }
+// });
+
+// addEventListener('resize', () => {
+//   camera.aspect = innerWidth / innerHeight;
+//   camera.updateProjectionMatrix();
+//   renderer.setSize(innerWidth, innerHeight);
+// });
+
+// (function animate(){
+//   requestAnimationFrame(animate);
+//   controls.update();
+//   renderer.render(scene, camera);
+// })();
+
