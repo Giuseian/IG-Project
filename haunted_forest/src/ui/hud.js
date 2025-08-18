@@ -1,86 +1,184 @@
 // src/ui/hud.js
 export function initHUD() {
-  // --- CSS (inject) ---
-  const style = document.createElement('style');
-  style.textContent = `
-    #hud {
-      position: fixed; left: 16px; top: 16px; z-index: 9999;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      color: #e8eef7; pointer-events: none;
-    }
-    #hud .panel {
-      background: rgba(0,0,0,0.55);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 10px;
-      padding: 10px 12px;
-      box-shadow: 0 6px 18px rgba(0,0,0,0.25);
-      min-width: 220px;
-    }
-    #hud .row { margin-bottom: 8px; }
-    #hud .label { font-size: 12px; opacity: 0.85; margin-bottom: 4px; }
-    #hud .bar {
-      width: 100%; height: 10px; border-radius: 999px; background: #1f2630; overflow: hidden;
-      outline: 1px solid rgba(255,255,255,0.06);
-    }
-    #hud .fill {
-      height: 100%; width: 0%; border-radius: inherit; transition: width 0.08s linear;
-    }
-    #hud .fill.health { background: linear-gradient(90deg, #38ef7d, #11998e); }
-    #hud .fill.heat   { background: linear-gradient(90deg, #ffd56a, #ff9d00); }
-    #hud .overheated .fill.heat { background: linear-gradient(90deg, #ff6b6b, #c9184a); }
-    #hud .line {
-      display: flex; align-items: baseline; justify-content: space-between;
-      margin-top: 8px; font-size: 13px; opacity: 0.9;
-    }
-    #hud .small { font-size: 11px; opacity: 0.75; }
-  `;
-  document.head.appendChild(style);
+  // --- scegli lo schema colori del Beam Heat ---
+  // Opzioni: "yellow-red" | "blue-red"
+  const HEAT_SCHEME = "blue-red";
 
-  // --- Markup ---
+  // ---- CSS (iniettato una sola volta) ----
+  if (!document.getElementById('hud-style')) {
+    const style = document.createElement('style');
+    style.id = 'hud-style';
+    style.textContent = `
+      :root{
+        --hud-bg:#2c3946ee;
+        --hud-fg:#e8f1ff;
+        --hud-muted:#a8b4c4;
+        --hud-accent:#18c08f;
+        --hud-danger:#ff6b6b;
+        --hud-track:#12161c;
+      }
+      .hud-card{
+        position: fixed; left:16px; top:16px; z-index: 10000;
+        min-width: 300px;
+        color: var(--hud-fg);
+        background: var(--hud-bg);
+        border-radius: 14px;
+        box-shadow: 0 14px 32px #0008, inset 0 1px 0 #fff1;
+        padding: 14px 16px;
+        backdrop-filter: blur(6px);
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif;
+        font-size: 14px;
+      }
+      .hud-row{
+        display: grid; grid-template-columns: auto 1fr auto;
+        align-items: center; gap: 10px;
+        margin: 10px 0;
+      }
+      .hud-label{
+        opacity: .95; display:flex; align-items:center; gap:8px;
+        white-space: nowrap;
+      }
+      .hud-icon{
+        width: 18px; height: 18px; display:inline-flex; align-items:center; justify-content:center;
+        filter: drop-shadow(0 1px 0 #0006);
+      }
+      .hud-value{
+        color: var(--hud-muted); font-variant-numeric: tabular-nums; min-width: 44px; text-align:right;
+      }
+      .meter{
+        position: relative; height: 12px; border-radius: 999px; overflow: hidden;
+        background: linear-gradient(#0000, #0002), var(--hud-track);
+        box-shadow: inset 0 1px 2px #0008, inset 0 0 0 1px #0006;
+      }
+      .meter > .fill{
+        position:absolute; inset:0; width:0%;
+        background: linear-gradient(90deg, #16d6a3, #19b88a);
+        box-shadow: 0 0 10px #16d6a380;
+        transition: width .12s ease;
+      }
+      /* Heat: colore deciso via JS con la CSS var --heat-color */
+      .meter.heat > .fill{
+        background: var(--heat-color, #20b8ff);
+        box-shadow: 0 0 12px color-mix(in srgb, var(--heat-color, #20b8ff) 70%, transparent);
+      }
+      /* Overheated: rosso pulsante */
+      @keyframes pulseRed { 0%{opacity:1} 50%{opacity:.6} 100%{opacity:1} }
+      .meter.heat.over > .fill{
+        background: var(--hud-danger);
+        box-shadow: 0 0 16px #ff6b6b88;
+        animation: pulseRed .8s ease-in-out infinite;
+      }
+      .hud-caption{ color: var(--hud-muted); opacity:.9; }
+      .hud-sep{ height:6px; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  // ---- Markup ----
   const root = document.createElement('div');
-  root.id = 'hud';
+  root.className = 'hud-card';
   root.innerHTML = `
-    <div class="panel">
-      <div class="row">
-        <div class="label">Health</div>
-        <div class="bar"><div class="fill health" style="width:0%"></div></div>
+    <!-- Health -->
+    <div class="hud-row">
+      <div class="hud-label">
+        <span class="hud-icon">❤️</span>
+        <span>Health</span>
       </div>
-      <div class="row" id="hud-heat-row">
-        <div class="label">Beam Heat <span class="small" id="hud-heat-state"></span></div>
-        <div class="bar"><div class="fill heat" style="width:0%"></div></div>
+      <div class="meter" id="hud-health-meter">
+        <div class="fill" id="hud-health-fill"></div>
       </div>
-      <div class="line">
-        <div>Score</div>
-        <div id="hud-score">0</div>
+      <div class="hud-value" id="hud-health-text">100</div>
+    </div>
+
+    <!-- Beam Heat -->
+    <div class="hud-row">
+      <div class="hud-label">
+        <span class="hud-icon">🔦</span>
+        <span>Beam&nbsp;Heat</span>
       </div>
+      <div class="meter heat" id="hud-heat-meter">
+        <div class="fill" id="hud-heat-fill"></div>
+      </div>
+      <div class="hud-value" id="hud-heat-text">0%</div>
+    </div>
+
+    <!-- Score -->
+    <div class="hud-row">
+      <div class="hud-label">
+        <span class="hud-icon">⭐</span>
+        <span>Score</span>
+      </div>
+      <div class="meter" id="hud-score-meter">
+        <div class="fill" id="hud-score-fill" style="opacity:.25"></div>
+      </div>
+      <div class="hud-value" id="hud-score-text">0</div>
     </div>
   `;
   document.body.appendChild(root);
 
+  // ---- refs ----
   const els = {
-    healthFill: root.querySelector('.fill.health'),
-    heatFill:   root.querySelector('.fill.heat'),
-    heatRow:    root.querySelector('#hud-heat-row'),
-    heatState:  root.querySelector('#hud-heat-state'),
-    scoreText:  root.querySelector('#hud-score'),
+    healthFill: root.querySelector('#hud-health-fill'),
+    healthText: root.querySelector('#hud-health-text'),
+    heatFill:   root.querySelector('#hud-heat-fill'),
+    heatText:   root.querySelector('#hud-heat-text'),
+    heatMeter:  root.querySelector('#hud-heat-meter'),
+    scoreText:  root.querySelector('#hud-score-text'),
   };
 
-  function clamp01(x){ return Math.max(0, Math.min(1, x)); }
+  // ---- helpers: colori heat ----
+  const hex = (r,g,b)=>'#'+[r,g,b].map(v=>v.toString(16).padStart(2,'0')).join('');
+  const lerp = (a,b,t)=>a+(b-a)*t;
+  const mix = (c1,c2,t)=>hex(
+    Math.round(lerp(c1[0],c2[0],t)),
+    Math.round(lerp(c1[1],c2[1],t)),
+    Math.round(lerp(c1[2],c2[2],t))
+  );
+  // palette punti di controllo per gli schemi
+  const blue    = [32,184,255];   // #20B8FF
+  const amber   = [255,209,102];  // #FFD166
+  const yellow  = [248,225,108];  // #F8E16C
+  const red     = [255,107,107];  // #FF6B6B
 
-  function set(health01, heat01, score, opts={}) {
-    const h = clamp01(health01);
-    const t = clamp01(heat01);
-    els.healthFill.style.width = (h*100).toFixed(1) + '%';
-    els.heatFill.style.width   = (t*100).toFixed(1) + '%';
-
-    const overheated = !!opts.overheated;
-    els.heatRow.classList.toggle('overheated', overheated);
-    els.heatState.textContent = overheated ? '(OVERHEATED)' : '';
-    els.scoreText.textContent = String(score|0);
+  function heatColor(t){
+    t = Math.max(0, Math.min(1, t));
+    if (HEAT_SCHEME === 'yellow-red') {
+      // giallo -> rosso (passando per arancio)
+      const m = 0.55;
+      return t < m ? mix(yellow, amber, t/m)
+                   : mix(amber,  red,   (t-m)/(1-m));
+    } else {
+      // blue-red (passando per giallo)
+      const m = 0.6;
+      return t < m ? mix(blue,   yellow, t/m)
+                   : mix(yellow, red,    (t-m)/(1-m));
+    }
   }
 
-  // default safe
-  set(1, 0, 0, { overheated:false });
+  // ---- API ----
+  function set(health01, heat01, score, { overheated=false } = {}) {
+    const h = Math.max(0, Math.min(1, health01 ?? 1));
+    const t = Math.max(0, Math.min(1, heat01   ?? 0));
 
-  return { set };
+    // Health
+    els.healthFill.style.width = `${h*100}%`;
+    els.healthText.textContent = Math.round(h*100);
+
+    // Heat
+    els.heatFill.style.width = `${t*100}%`;
+    els.heatText.textContent = `${Math.round(t*100)}%`;
+    els.heatMeter.classList.toggle('over', !!overheated);
+
+    // Colore dinamico (se NON overheated)
+    if (!overheated) {
+      const col = heatColor(t);
+      els.heatFill.style.setProperty('--heat-color', col);
+    }
+
+    // Score
+    els.scoreText.textContent = String(score ?? 0);
+  }
+
+  set(1, 0, 0); // iniziale
+  return { root, set };
 }
