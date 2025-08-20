@@ -690,11 +690,14 @@
 
 
 
-// WORKING SINGLE GHOST WITH DYNAMIC TARGET
+// WORKING SINGLE GHOST WITH DYNAMIC TARGET (diagnostica inclusa)
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
 import { Ghost } from './entities/Ghost.js';
 import { initHUD } from './ui/hud.js';
+
+// ---- master switch per log rumorosi ----
+window.DEBUG = false;
 
 let scene, camera, renderer, controls, ghost, hud;
 let ground, targetMarker, targetRing, targetBeacon;
@@ -705,8 +708,8 @@ let _t = performance.now() * 0.001;
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 
-// === TARGET LOCK (runtime-toggleable) ===
-const LOCK_TARGET = false;      // default: UNLOCKED (click-to-move ON)
+// TARGET LOCK
+const LOCK_TARGET = false;
 const FIX_X = 4.0;
 const FIX_Z = -4.0;
 let isLocked = LOCK_TARGET;
@@ -721,7 +724,7 @@ function snapshot(tag='snap') {
   const dx = (mp?.x ?? 0) - (gp?.x ?? 0);
   const dz = (mp?.z ?? 0) - (gp?.z ?? 0);
   const d  = Math.hypot(dx,dz);
-  console.log(`[${tag}] ghost=${fmt(gp)} marker=${fmt(mp)} targetAI=${fmt(tp)} sameRef=${mp===tp} dXZ=${d.toFixed(3)}`);
+  if (window.DEBUG) console.log(`[${tag}] ghost=${fmt(gp)} marker=${fmt(mp)} targetAI=${fmt(tp)} sameRef=${mp===tp} dXZ=${d.toFixed(3)}`);
 }
 
 function makeLabel(){
@@ -788,7 +791,7 @@ async function init() {
   ground.position.y = -0.10;
   scene.add(ground);
 
-  // Target marker ARANCIONE (disco + ring)
+  // Target marker & ring
   const markerR = 0.6, ringR = 0.75;
   targetMarker = new THREE.Mesh(
     new THREE.CircleGeometry(markerR, 64),
@@ -806,7 +809,7 @@ async function init() {
 
   targetPoint = targetMarker.position;
 
-  // Beacon (palo)
+  // Beacon
   targetBeacon = new THREE.Mesh(
     new THREE.CylinderGeometry(0.055, 0.055, 2.0, 22),
     new THREE.MeshBasicMaterial({ color: 0xff8c00, transparent:true, opacity:0.95, depthTest:false })
@@ -814,12 +817,12 @@ async function init() {
   targetBeacon.frustumCulled = false; targetBeacon.renderOrder = 998;
   scene.add(targetBeacon);
 
-  // Freccia
+  // Arrow
   ghostArrow = new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(), 1.5, 0x18c08f);
   ghostArrow.frustumCulled = false; ghostArrow.renderOrder = 997;
   scene.add(ghostArrow);
 
-  // Linea + striscia a terra
+  // Line + strip
   seekLineGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
   seekLine = new THREE.Line(seekLineGeom, new THREE.LineBasicMaterial({ color: 0xff8c00 }));
   seekLine.frustumCulled = false; seekLine.renderOrder = 996;
@@ -830,11 +833,11 @@ async function init() {
   seekStrip.rotation.x = -Math.PI/2; seekStrip.frustumCulled = false; seekStrip.renderOrder = 995;
   scene.add(seekStrip);
 
-  // Etichette
+  // Labels
   labelGhost = makeLabel(); scene.add(labelGhost);
   labelTarget = makeLabel(); scene.add(labelTarget);
 
-  // Target iniziale (mostriamo che funziona anche sbloccato)
+  // Target iniziale
   setTarget(FIX_X, FIX_Z);
   snapshot('lock');
 
@@ -854,7 +857,13 @@ async function init() {
   await ghost.load();
   ghost.setPosition(0, 1.40, 0).addTo(scene);
 
-  // Idle vivo
+  ghost.setDebugMode(0);   // 0 = NORMAL, spegne ogni vista di debug
+
+  // forza compilazione shader
+  renderer.compile(scene, camera);
+  if (window.DEBUG) console.log('uniformSets at init:', ghost.uniformSets?.length, ghost.uniformSets);
+
+  // Idle
   ghost.setIdleParams({
     baseY: 0.45,
     ampBob: 0.06,
@@ -871,42 +880,55 @@ async function init() {
   hud = initHUD();
   focusOnGhost(4.5);
 
-  // Always listen, gate behavior by isLocked
   renderer.domElement.addEventListener('pointerdown', onPointerDown);
 
   // Debug / controls
   addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     if (k==='f') focusOnGhost(2.0);
-    if (k==='t') { ghost.root.position.set(targetPoint.x, ghost.root.position.y, targetPoint.z); console.log('teleport ghost to target'); }
+    if (k==='t') { ghost.root.position.set(targetPoint.x, ghost.root.position.y, targetPoint.z); if (window.DEBUG) console.log('teleport ghost to target'); }
     if (k==='p') snapshot('manual');
     if (k==='o') toggleTopDown();
 
-    if (k==='a') ghost.appear();      // appearing → (auto) active
-    if (k==='x') ghost.cleanse();     // active → cleansing → inactive (auto)
-    if (k==='z') ghost.deactivate();  // force inactive immediately
+    if (k==='a') ghost.appear();
+    if (k==='x') ghost.cleanse();
+    if (k==='z') ghost.deactivate();
 
-    // NEW: lock/unlock target at runtime
     if (k==='l') setLocked(!isLocked);
+
+    // thresholds
+    if (k==='1') { ghost?._setThreshold(1.0);  console.log('thr=1.0'); }
+    if (k==='2') { ghost?._setThreshold(0.5);  console.log('thr=0.5'); }
+    if (k==='3') { ghost?._setThreshold(0.25); console.log('thr=0.25'); }
+
+    // diagnostica shader
+    if (k==='9') {
+      animate._dbgMode = ((animate._dbgMode ?? 0) + 1) % 4; // 0..3
+      ghost.setDebugMode(animate._dbgMode);
+      const labels = ['NORMAL','NOISE','MASK','EDGE'];
+      console.log('[DEBUG MODE]', animate._dbgMode, labels[animate._dbgMode]);
+    }
+    if (k==='m') ghost.logMaterialsDebug();
+    if (k==='r') { renderer.compile(scene, camera); console.log('[renderer] compile() called'); }
+
+    // toggle log rumorosi
+    if (k==='k') { window.DEBUG = !window.DEBUG; console.log('DEBUG =', window.DEBUG); }
   });
 
-  // apply initial lock visuals
   setLocked(isLocked);
 
   addEventListener('resize', onResize);
-  window.ghost = ghost; window.targetPoint = targetPoint;
+  window.ghost = ghost; window.targetPoint = targetPoint; window.renderer = renderer; window.scene = scene; window.camera = camera;
 }
 
 function setLocked(v){
   isLocked = !!v;
-  // UI cues
   renderer.domElement.style.cursor = isLocked ? 'default' : 'crosshair';
-  // slight color cue (greenish when unlocked)
   if (targetBeacon?.material) {
     targetBeacon.material.color.set(isLocked ? 0xff8c00 : 0x22cc88);
     targetBeacon.material.needsUpdate = true;
   }
-  console.log(`[target] ${isLocked ? 'LOCKED' : 'UNLOCKED'}  (press L to toggle)`);
+  if (window.DEBUG) console.log(`[target] ${isLocked ? 'LOCKED' : 'UNLOCKED'}  (press L to toggle)`);
 }
 
 function setTarget(x, z){
@@ -917,8 +939,8 @@ function setTarget(x, z){
 }
 
 function onPointerDown(e){
-  if (isLocked) return;            // ignore when locked
-  if (e.button !== 0) return;      // only left click/tap
+  if (isLocked) return;
+  if (e.button !== 0) return;
   ndc.x =  (e.clientX / innerWidth)  * 2 - 1;
   ndc.y = -(e.clientY / innerHeight) * 2 + 1;
   raycaster.setFromCamera(ndc, camera);
@@ -968,21 +990,16 @@ function animate() {
 
   ghost?.update(dt);
 
-  // distanza XZ + HUD + log
+  // HUD
   if (ghost) {
     const dNow = Math.hypot(targetPoint.x - ghost.root.position.x,
                             targetPoint.z - ghost.root.position.z);
-    if (animate._dPrev !== undefined) {
-      const dlt = dNow - animate._dPrev;
-      console.log(`[seek] d=${dNow.toFixed(2)}  Δ=${dlt.toFixed(3)} ${dlt<0?'(avvicina)':'(allontana)'}`);
-    }
     animate._dPrev = dNow;
-
     const thr = ghost._getThreshold ? ghost._getThreshold() : 1;
     hud?.setDebug({ state: ghost.state ?? 'inactive', threshold: thr, exposure: ghost.exposure ?? 0, dist: dNow });
   }
 
-  // Freccia + colore (verde ok, rosso all’indietro)
+  // Arrow
   if (ghost && posPrev) {
     const origin = new THREE.Vector3().copy(ghost.root.position); origin.y += 1.1;
     const dir = new THREE.Vector3().copy(targetPoint).sub(origin); dir.y = 0;
@@ -998,11 +1015,11 @@ function animate() {
     if (moved.lengthSq()>1e-8 && toT.lengthSq()>1e-8) {
       const dot = moved.normalize().dot(toT.normalize());
       ghostArrow.setColor(new THREE.Color(dot < -0.01 ? 0xff3b30 : 0x18c08f));
-      if (dot < -0.01) console.warn('Ghost si muove al contrario! dot=', dot.toFixed(3));
+      if (window.DEBUG && dot < -0.01) console.warn('Ghost si muove al contrario! dot=', dot.toFixed(3));
     }
   }
 
-  // Linea & striscia tra ghost e target
+  // Linea & striscia a terra
   if (ghost && seekLine && seekStrip) {
     const gy = ground.position.y + 0.05;
     const gx = ghost.root.position.x, gz = ghost.root.position.z;
@@ -1024,7 +1041,7 @@ function animate() {
     seekStrip.scale.set(len, 1, 1);
   }
 
-  // Etichette
+  // Labels 3D
   if (ghost && labelGhost && labelTarget) {
     const gp = ghost.root.position, tp = targetPoint;
     labelGhost.position.set(gp.x, gp.y + 1.8, gp.z);
@@ -1044,6 +1061,48 @@ function onResize() {
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
