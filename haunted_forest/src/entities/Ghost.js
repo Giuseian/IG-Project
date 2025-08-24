@@ -45,7 +45,6 @@ function buildGhostMaterialsForMesh(mesh, opacityBody) {
         vertexColors: !!geom.attributes.color,
       });
       patchGhostMaterial(mat);
-      (mesh.userData._uniformSets ||= []).push(mat.userData._ghostUniforms);
       return mat;
     }
   });
@@ -58,11 +57,13 @@ function buildGhostMaterialsForMesh(mesh, opacityBody) {
 const _wRoot  = new THREE.Vector3();
 const _wModel = new THREE.Vector3();
 const _dir    = new THREE.Vector3();
+const _tmpV   = new THREE.Vector3();
 
 export class Ghost {
   constructor(opts = {}) {
     this.url           = opts.url ?? '/assets/models/ghost/ghost.glb';
     this.targetHeight  = opts.targetHeight ?? 2.2;
+    this.scaleJitter   = opts.scaleJitter ?? 0.25; // ±25%
     this.opacityBody   = opts.opacityBody ?? 0.75;
 
     this.getGroundY = opts.getGroundY || ((x, z) => 0.0);
@@ -94,17 +95,30 @@ export class Ghost {
       maxY: 0.60,
     };
 
-    this.state    = 'inactive';
-    this.tState   = 0;
-    this.exposure = 0;
+    // movimento “predatore”
+    this.vel = new THREE.Vector3(0,0,0);
+    this.yaw = 0;
     this.params = {
       appearDuration:   1.2,
       cleanseDuration:  0.8,
-      speed:            opts.speed ?? 1.2,
-      keepDistance:     opts.keepDistance ?? 0.0,
-      arriveRadius:     opts.arriveRadius ?? 0.03,
+      speed:            opts.speed ?? 5.2,
+      burstMultiplier:  opts.burstMultiplier ?? 1.5,
+      yawRateDeg:       opts.yawRateDeg ?? 540,
+      keepDistance:     opts.keepDistance ?? 0.2,
+      arriveRadius:     opts.arriveRadius ?? 1.4,
       exposureFalloff:  0.6,
     };
+    this.swoop = {
+      far:   opts.swoop?.far   ?? 100,
+      near:  opts.swoop?.near  ?? 45,
+      hLow:  opts.swoop?.hLow  ?? 1.6,
+      hHigh: opts.swoop?.hHigh ?? 5.8,
+      yLerp: opts.swoop?.yLerp ?? 3.2
+    };
+
+    this.state    = 'inactive';
+    this.tState   = 0;
+    this.exposure = 0;
 
     this._time = 0;
     this._debugPins = null;
@@ -120,12 +134,8 @@ export class Ghost {
     this._normalize();
     this._applyMaterials();
 
-    // gerarchia & offset
     this._ensureHierarchy();
     this._zeroLocalOffsetsXZ();
-
-    // debug pins
-    this._attachDebugPins();
 
     // stato iniziale
     this._setThreshold(0.98);
@@ -176,7 +186,6 @@ export class Ghost {
       const dx = Math.abs(_wModel.x - _wRoot.x);
       const dz = Math.abs(_wModel.z - _wRoot.z);
       if (dx > 0.02 || dz > 0.02) {
-        if (window.DEBUG) console.warn(`[ghost drift] MODEL!=ROOT on XZ  dx=${dx.toFixed(3)}  dz=${dz.toFixed(3)}  (fixing hierarchy)`);
         this._ensureHierarchy();
         this._zeroLocalOffsetsXZ();
       }
@@ -210,26 +219,51 @@ export class Ghost {
     const target = this.getTargetPos();
     if (!target) return;
 
+    // direzione verso il target (XZ)
     _dir.subVectors(target, this.root.position);
     _dir.y = 0;
     const dist = _dir.length();
     if (!isFinite(dist) || dist < 1e-6) return;
-
-    const stop    = Math.max(0, this.params.keepDistance || 0);
-    const arriveR = Math.max(1e-3, this.params.arriveRadius || 0.03);
-
     _dir.multiplyScalar(1 / dist);
-    const desired = Math.max(0, dist - stop);
 
-    if (desired <= arriveR) {
-      this.root.position.x = target.x - _dir.x * stop;
-      this.root.position.z = target.z - _dir.z * stop;
-      return;
+    // turn-rate limitato (lerp tra direzione attuale e desiderata)
+    const yawRate = THREE.MathUtils.degToRad(this.params.yawRateDeg || 540);
+    const kTurn   = Math.min(1, yawRate * dt);
+    if (this.vel.lengthSq() < 1e-6) {
+      this.vel.copy(_dir);
+    } else {
+      const cur = _tmpV.copy(this.vel).normalize();
+      cur.lerp(_dir, kTurn).normalize();
+      this.vel.copy(cur);
     }
 
-    const step = Math.min(this.params.speed * dt, desired);
-    this.root.position.x += _dir.x * step;
-    this.root.position.z += _dir.z * step;
+    // velocità con "burst" quando è lontano
+    let spd = this.params.speed;
+    if (dist > this.swoop.far) spd *= this.params.burstMultiplier;
+
+    const step = spd * dt;
+    this.root.position.x += this.vel.x * step;
+    this.root.position.z += this.vel.z * step;
+
+    // quota: alto quando lontano, basso quando vicino (senza toccare terra)
+    const gy = this.getGroundY(this.root.position.x, this.root.position.z);
+    const yHigh = gy + this.swoop.hHigh;
+    const yLow  = gy + this.swoop.hLow;
+    const yTarget = (dist > this.swoop.far) ? yHigh
+                  : (dist <= this.swoop.near ? yLow
+                                             : THREE.MathUtils.lerp(yHigh, yLow, (this.swoop.far - dist) / (this.swoop.far - this.swoop.near)));
+    const yK = Math.min(1, this.swoop.yLerp * dt);
+    this.root.position.y = THREE.MathUtils.lerp(this.root.position.y, yTarget, yK);
+
+    // orientamento visivo verso la direzione di movimento
+    if (this.vel.lengthSq() > 1e-6) {
+      const yawTarget = Math.atan2(this.vel.x, this.vel.z);
+      let dy = yawTarget - this.yaw;
+      while (dy >  Math.PI) dy -= 2*Math.PI;
+      while (dy < -Math.PI) dy += 2*Math.PI;
+      this.yaw += dy * kTurn;
+      this.rig.rotation.y = this.yaw;
+    }
   }
 
   _updateCleansing(dt) {
@@ -279,7 +313,9 @@ export class Ghost {
     this.model.position.z -= center.z;
     this.model.position.y -= box.min.y;
 
-    const s = (this.targetHeight / (size.y || 1.0));
+    // scala con jitter
+    const jitter = 1 + (Math.random()*2 - 1) * this.scaleJitter;
+    const s = (this.targetHeight * jitter / (size.y || 1.0));
     this.model.scale.setScalar(s);
 
     const box2 = new THREE.Box3().setFromObject(this.model);
@@ -287,32 +323,28 @@ export class Ghost {
   }
 
   _applyMaterials() {
-    this.model.traverse((o) => {
-      if (!o.isMesh) return;
+    const meshes = [];
+    this.model.traverse((o) => { if (o.isMesh) meshes.push(o); });
 
+    for (const o of meshes) {
       const mats = buildGhostMaterialsForMesh(o, this.opacityBody);
       const arr = Array.isArray(mats) ? mats : [mats];
+
       this.materials.push(...arr);
 
-      // raccogli uniform set dai materiali patchati
-      arr.forEach((m) => {
+      for (const m of arr) {
         const u = m?.userData?._ghostUniforms;
         if (u) this.uniformSets.push(u);
-      });
+      }
 
       o.castShadow = false;
       o.receiveShadow = false;
       o.renderOrder = 10;
-    });
-
-    if (window.DEBUG) console.log('[Ghost] uniformSets trovati:', this.uniformSets.length);
+    }
   }
 
   _ensureHierarchy() {
-    if (this.model.parent !== this.rig) {
-      if (window.DEBUG) console.warn('Ghost: model non era figlio del rig. Lo sistemo.');
-      this.rig.add(this.model);
-    }
+    if (this.model.parent !== this.rig) this.rig.add(this.model);
     if (this.rig.parent !== this.root) this.root.add(this.rig);
     this.model.updateMatrixWorld(true);
     this.rig.updateMatrixWorld(true);
@@ -324,30 +356,11 @@ export class Ghost {
     this.model.position.x = 0; this.model.position.z = 0;
   }
 
-  _attachDebugPins() {
-    if (this._debugPins) return;
-    const mk = (col)=> new THREE.Mesh(
-      new THREE.SphereGeometry(0.08, 16, 16),
-      new THREE.MeshBasicMaterial({ color: col, depthTest:false, depthWrite:false })
-    );
-    const rootDot  = mk(0x00ffff);
-    const modelDot = mk(0xff00aa);
-    rootDot.position.set(0, 1.2, 0);
-    modelDot.position.set(0, 1.2, 0);
-    this.root.add(rootDot);
-    this.model.add(modelDot);
-    this._debugPins = { rootDot, modelDot };
-  }
-
   // ===== DIAGNOSTICA =====
   setDebugMode(mode = 0) {
-    for (const s of this.uniformSets) {
-      if (s?.uDebugMode) s.uDebugMode.value = mode | 0;
-    }
-    console.log('[Ghost] setDebugMode =', mode);
+    for (const s of this.uniformSets) { if (s?.uDebugMode) s.uDebugMode.value = mode | 0; }
     return this;
   }
-
   logMaterialsDebug() {
     console.log('--- Ghost debug ---');
     console.log('uniformSets:', this.uniformSets?.length, this.uniformSets);

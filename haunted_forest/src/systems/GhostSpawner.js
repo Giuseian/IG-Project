@@ -2,7 +2,8 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 import { Ghost } from '../entities/Ghost.js';
 
-function rand01(){ return Math.random(); }
+const rand01 = ()=>Math.random();
+const randInt = (a,b)=> (a + Math.floor(Math.random() * (b - a + 1)));
 
 export class GhostSpawner {
   constructor(opts = {}) {
@@ -42,12 +43,22 @@ export class GhostSpawner {
       },
 
       // DESPAWN / CULLING
-      farCull:            opts.farCull            ?? ((opts.maxR ?? 14) * 2), // raggio duro
-      despawnBehindDist:  opts.despawnBehindDist  ?? 60,   // quanto "dietro" rispetto al forward
-      minBehindRange:     opts.minBehindRange     ?? 30,   // non despawnare se troppo vicino
-      behindTime:         opts.behindTime         ?? 1.25, // isteresi temporale
-      protectSeconds:     opts.protectSeconds     ?? 0.75, // protezione dopo lo spawn
-      despawnStyle:       opts.despawnStyle       ?? 'deactivate', // 'deactivate' | 'cleanse'
+      farCull:            opts.farCull            ?? ((opts.maxR ?? 14) * 2),
+      despawnBehindDist:  opts.despawnBehindDist  ?? 60,
+      minBehindRange:     opts.minBehindRange     ?? 30,
+      behindTime:         opts.behindTime         ?? 1.25,
+      protectSeconds:     opts.protectSeconds     ?? 0.75,
+      despawnStyle:       opts.despawnStyle       ?? 'deactivate',
+
+      // WAVE by distance (nuovo)
+      wave: {
+        byDistance: opts.wave?.byDistance ?? true,
+        meters:     opts.wave?.meters     ?? 70,
+        countMin:   opts.wave?.countMin   ?? 2,
+        countMax:   opts.wave?.countMax   ?? 3,
+        minInterval:opts.wave?.minInterval?? 2.5,
+        jitter:     opts.wave?.jitter     ?? 1.0,
+      },
 
       // Ghost defaults
       ghostOpts:          opts.ghostOpts ?? {},
@@ -56,6 +67,11 @@ export class GhostSpawner {
     // State
     this.spawnCooldown = this.params.spawnInterval;
     this._time = 0;
+
+    // wave state
+    this._lastCamPos   = this.camera?.position?.clone() ?? new THREE.Vector3();
+    this._distAccum    = 0;
+    this._waveCooldown = 0;
 
     // scratch
     this._frustum = new THREE.Frustum();
@@ -89,6 +105,16 @@ export class GhostSpawner {
   toggleAntiPopIn(){ this.params.antiPopIn = !this.params.antiPopIn; }
 
   forceSpawnNow(){ this.spawnCooldown = 0; this._trySpawnOne(); }
+  forceWave(n = 2){
+    const want = Math.max(1, n|0);
+    for (let i=0; i<want; i++){
+      if (this.active.size >= this.params.maxAlive) break;
+      if (!this._trySpawnOne()) break;
+    }
+    this._distAccum = 0;
+    this._waveCooldown = this.params.wave.minInterval;
+  }
+
   fillToCap(){
     let guard = 32;
     while (this.active.size < this.params.maxAlive && guard-- > 0) {
@@ -122,17 +148,35 @@ export class GhostSpawner {
   update(dt) {
     this._time += dt;
 
+    // distanza XZ per ondata
+    const cp = this.camera.position;
+    this._distAccum += Math.hypot(cp.x - this._lastCamPos.x, cp.z - this._lastCamPos.z);
+    this._lastCamPos.copy(cp);
+    this._waveCooldown -= dt;
+
     // 1) riciclo quelli diventati inactive
     this._recycleInactive();
 
     // 2) culling per distanza / dietro la camera
     this._cullByDistanceAndBehind(dt);
 
-    // 3) cooldown & spawn
+    // 3) cooldown & spawn singolo
     this.spawnCooldown -= dt;
     if (this.spawnCooldown <= 0 && this.active.size < this.params.maxAlive) {
       const spawned = this._trySpawnOne();
       this.spawnCooldown = spawned ? this.params.spawnInterval : Math.max(0.5, this.params.spawnInterval * 0.25);
+    }
+
+    // 4) ondata a distanza
+    const w = this.params.wave;
+    if (w.byDistance && this._waveCooldown <= 0 && this._distAccum >= w.meters) {
+      const want = randInt(w.countMin, w.countMax);
+      for (let i=0; i<want; i++) {
+        if (this.active.size >= this.params.maxAlive) break;
+        if (!this._trySpawnOne()) break;
+      }
+      this._distAccum = 0;
+      this._waveCooldown = Math.max(0.5, w.minInterval + (Math.random()*2 - 1) * w.jitter);
     }
 
     // IMPORTANTE: avanzare FSM/idle/motion dei ghost
@@ -205,9 +249,6 @@ export class GhostSpawner {
       }
 
       // (2) dietro rispetto al forward della camera
-      //     - richiede anche che NON sia nel frustum (evita popping mentre lo guardi)
-      //     - non contarla mentre il ghost sta prendendo colpi (exposure>0.05)
-      //     - non aplicararla se in protezione spawn
       const exposure = +g.exposure || 0;
       if (!inProtect && exposure <= 0.05) {
         const s = this._forward.x * dx + this._forward.z * dz; // proiezione firmata
@@ -220,11 +261,9 @@ export class GhostSpawner {
             continue;
           }
         } else {
-          // reset timer se non è più dietro/sufficientemente distante o visibile
           if (this._behindTimers.has(g)) this._behindTimers.set(g, 0);
         }
       } else {
-        // in protezione o colpito: non accumulare dietro
         if (this._behindTimers.has(g)) this._behindTimers.set(g, 0);
       }
     }
@@ -325,11 +364,16 @@ export class GhostSpawner {
     }
 
     if (antiPopIn) {
+      // rifiuta solo se è proprio "nel muso" della camera (no rifiuto aggressivo)
       this._proj.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
       this._frustum.setFromProjectionMatrix(this._proj);
-      if (this._frustum.containsPoint(p)) return true;
+      const onScreen = this._frustum.containsPoint(p);
+      const cam = this.camera.position;
+      const distCam = Math.hypot(p.x - cam.x, p.z - cam.z);
+      if (onScreen && distCam < (this.params.minR * 0.85)) return true;
     }
 
     return false;
   }
 }
+
