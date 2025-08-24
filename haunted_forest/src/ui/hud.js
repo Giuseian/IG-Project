@@ -16,7 +16,7 @@ export function initHUD() {
       }
       .hud-card{
         position: fixed; left:16px; top:16px; z-index: 10000;
-        min-width: 360px;
+        min-width: 380px;
         color: var(--hud-fg);
         background: var(--hud-bg);
         border-radius: 14px;
@@ -47,6 +47,7 @@ export function initHUD() {
         background: linear-gradient(#0000, #0002), var(--hud-track);
         box-shadow: inset 0 1px 2px #0008, inset 0 0 0 1px #0006;
       }
+      .meter.slim{ height: 10px; }
       .meter > .fill{
         position:absolute; inset:0; width:0%;
         background: linear-gradient(90deg, #16d6a3, #19b88a);
@@ -71,15 +72,19 @@ export function initHUD() {
         white-space: nowrap;
       }
       .badge-inactive{ background:#47556944; color:#cbd5e1; }
-      .badge-appearing{ background:#f59e0b33; color:#f8e16c; }
-      .badge-active{ background:#10b98133; color:#18c08f; }
-      .badge-cleansing{ background:#ef444433; color:#ff6b6b; }
 
       .hud-rightstack{
         display:flex; align-items:center; gap:8px; justify-content:flex-end;
         flex-wrap: wrap;
         min-width: 220px;
       }
+
+      /* Sanctuary badge palette (niente più blocked) */
+      .sanct-idle{ background:#3b82f633; color:#93c5fd; }
+      .sanct-armed{ background:#ef444433; color:#fecaca; }
+      .sanct-purifying{ background:#fbbf2433; color:#fde68a; }
+      .sanct-done{ background:#10b98133; color:#a7f3d0; }
+      .sanct-safe{ background:#0ea5a533; color:#99f6e4; }
     `;
     document.head.appendChild(style);
   }
@@ -120,6 +125,25 @@ export function initHUD() {
       <div class="hud-value" id="hud-score-text">0</div>
     </div>
 
+    <!-- Sanctuary row -->
+    <div class="hud-row">
+      <div class="hud-label">
+        <span class="hud-icon">🛕</span>
+        <span>Sanctuary</span>
+      </div>
+      <div>
+        <div class="meter slim" id="hud-sanct-meter" title="progress">
+          <div class="fill" id="hud-sanct-fill"></div>
+        </div>
+        <div style="margin-top:6px; display:flex; gap:8px; align-items:center;">
+          <span id="hud-sanct-state" class="hud-badge sanct-idle">idle</span>
+          <span id="hud-sanct-safe"  class="hud-badge sanct-safe" style="display:none;">SAFE</span>
+          <span id="hud-sanct-dist"  class="hud-badge" title="distance to nearest">d: 0.0m</span>
+        </div>
+      </div>
+      <div class="hud-value" id="hud-sanct-pct">0%</div>
+    </div>
+
     <div class="hud-row">
       <div class="hud-label">
         <span class="hud-icon">👻</span>
@@ -133,7 +157,7 @@ export function initHUD() {
       </div>
     </div>
 
-    <!-- NEW: Spawner row -->
+    <!-- Spawner row -->
     <div class="hud-row">
       <div class="hud-label">
         <span class="hud-icon">🧲</span>
@@ -158,12 +182,22 @@ export function initHUD() {
     heatText:   root.querySelector('#hud-heat-text'),
     heatMeter:  root.querySelector('#hud-heat-meter'),
     scoreText:  root.querySelector('#hud-score-text'),
+
+    // Sanctuary
+    sanctFill:  root.querySelector('#hud-sanct-fill'),
+    sanctMeter: root.querySelector('#hud-sanct-meter'),
+    sanctPct:   root.querySelector('#hud-sanct-pct'),
+    sanctState: root.querySelector('#hud-sanct-state'),
+    sanctSafe:  root.querySelector('#hud-sanct-safe'),
+    sanctDist:  root.querySelector('#hud-sanct-dist'),
+
+    // Ghost
     gState:     root.querySelector('#hud-ghost-state'),
     gThr:       root.querySelector('#hud-ghost-thr'),
     gExp:       root.querySelector('#hud-ghost-exp'),
     gDist:      root.querySelector('#hud-ghost-dist'),
 
-    // NEW spawner refs
+    // Spawner
     spAlive: root.querySelector('#hud-sp-alive'),
     spCap:   root.querySelector('#hud-sp-cap'),
     spPool:  root.querySelector('#hud-sp-pool'),
@@ -211,6 +245,25 @@ export function initHUD() {
     els.scoreText.textContent = String(score ?? 0);
   }
 
+  // aggiorna Sanctuary (senza "blocked")
+  function setSanctuary(info, { safe=false } = {}) {
+    // info: { state, t, dist, radius }
+    const state = info?.state || 'idle';
+    const t = Math.max(0, Math.min(1, info?.t ?? 0));
+    els.sanctFill.style.width = `${Math.round(t*100)}%`;
+    els.sanctPct.textContent = `${Math.round(t*100)}%`;
+
+    const clsMap = {
+      idle:'sanct-idle', armed:'sanct-armed',
+      purifying:'sanct-purifying', done:'sanct-done'
+    };
+    els.sanctState.textContent = state;
+    els.sanctState.className = `hud-badge ${clsMap[state] || 'sanct-idle'}`;
+
+    els.sanctSafe.style.display = safe ? '' : 'none';
+    if (info?.dist != null) els.sanctDist.textContent = `d: ${(+info.dist).toFixed(1)}m`;
+  }
+
   function setDebug(d = {}) {
     const state = d.state ?? 'inactive';
     els.gState.textContent = String(state);
@@ -225,7 +278,6 @@ export function initHUD() {
     if (d.exposure  != null) els.gExp.textContent  = `exp: ${(+d.exposure).toFixed(2)}`;
     if (d.dist      != null) els.gDist.textContent = `d: ${(+d.dist).toFixed(2)}m`;
 
-    // NEW: spawner info (optional)
     const sp = d.spawner || {};
     if (els.spAlive && sp.alive != null) els.spAlive.textContent = `alive: ${sp.alive}`;
     if (els.spCap   && sp.maxAlive != null) els.spCap.textContent = `cap: ${sp.maxAlive}`;
@@ -237,5 +289,5 @@ export function initHUD() {
 
   set(1, 0, 0);
   setDebug();
-  return { root, set, setDebug };
+  return { root, set, setSanctuary, setDebug };
 }
