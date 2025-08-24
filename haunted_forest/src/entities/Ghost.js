@@ -4,7 +4,6 @@ import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/
 import { OBJLoader }   from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/OBJLoader.js';
 import { patchGhostMaterial } from '../entities/dissolvePatch.js';
 
-// feature detector: occhi/bocca/guance non patchati
 function isFeature(mesh, mat) {
   const a = (mesh?.name || '').toLowerCase();
   const b = (mat?.name  || '').toLowerCase();
@@ -53,7 +52,6 @@ function buildGhostMaterialsForMesh(mesh, opacityBody) {
   return newMats;
 }
 
-// tmp vectors
 const _wRoot  = new THREE.Vector3();
 const _wModel = new THREE.Vector3();
 const _dir    = new THREE.Vector3();
@@ -63,7 +61,7 @@ export class Ghost {
   constructor(opts = {}) {
     this.url           = opts.url ?? '/assets/models/ghost/ghost.glb';
     this.targetHeight  = opts.targetHeight ?? 2.2;
-    this.scaleJitter   = opts.scaleJitter ?? 0.25; // ±25%
+    this.scaleJitter   = opts.scaleJitter ?? 0.28;
     this.opacityBody   = opts.opacityBody ?? 0.75;
 
     this.getGroundY = opts.getGroundY || ((x, z) => 0.0);
@@ -81,7 +79,6 @@ export class Ghost {
     this.uniformSets = [];
     this.baseRadius  = 0.8;
 
-    // idle bob + sway
     this.idle = {
       baseY: 0.45,
       phase: Math.random() * Math.PI * 2,
@@ -95,24 +92,25 @@ export class Ghost {
       maxY: 0.60,
     };
 
-    // movimento “predatore”
+    // movimento
     this.vel = new THREE.Vector3(0,0,0);
     this.yaw = 0;
     this.params = {
-      appearDuration:   1.2,
+      appearDuration:   1.0,
       cleanseDuration:  0.8,
-      speed:            opts.speed ?? 5.2,
-      burstMultiplier:  opts.burstMultiplier ?? 1.5,
-      yawRateDeg:       opts.yawRateDeg ?? 540,
-      keepDistance:     opts.keepDistance ?? 0.2,
-      arriveRadius:     opts.arriveRadius ?? 1.4,
+      speed:            opts.speed ?? 6.0,
+      burstMultiplier:  opts.burstMultiplier ?? 1.6,
+      yawRateDeg:       opts.yawRateDeg ?? 720,  // alto = curvano subito
+      keepDistance:     opts.keepDistance ?? 0.0,
+      arriveRadius:     opts.arriveRadius ?? 1.2,
       exposureFalloff:  0.6,
+      hardLockDist:     opts.hardLockDist ?? 60  // oltre questa distanza aggancio diretto
     };
     this.swoop = {
-      far:   opts.swoop?.far   ?? 100,
-      near:  opts.swoop?.near  ?? 45,
+      far:   opts.swoop?.far   ?? 120,
+      near:  opts.swoop?.near  ?? 55,
       hLow:  opts.swoop?.hLow  ?? 1.6,
-      hHigh: opts.swoop?.hHigh ?? 5.8,
+      hHigh: opts.swoop?.hHigh ?? 7.2,
       yLerp: opts.swoop?.yLerp ?? 3.2
     };
 
@@ -165,7 +163,6 @@ export class Ghost {
   update(dt) {
     this._time += dt;
 
-    // avanzamento tempo per emissive/scroll noise
     for (const set of this.uniformSets) {
       if (set?.uPulseTime) set.uPulseTime.value = this._time;
     }
@@ -179,7 +176,7 @@ export class Ghost {
       case 'cleansing': this._updateCleansing(dt); break;
     }
 
-    // sanity: model deve seguire root su XZ
+    // sicurezza gerarchia
     if (this.model && this.root.parent) {
       this.root.getWorldPosition(_wRoot);
       this.model.getWorldPosition(_wModel);
@@ -198,7 +195,21 @@ export class Ghost {
     this.tState = 0;
 
     if (next === 'inactive') { this.setVisible(false); this.exposure = 0; this._setThreshold(0.98); }
-    if (next === 'appearing'){ this.setVisible(true);  this.exposure = 0; this._setThreshold(0.98); }
+
+    if (next === 'appearing'){
+      this.setVisible(true);
+      this.exposure = 0;
+      this._setThreshold(0.98);
+
+      // *** PARTENZA DALL'ALTO (canopy) ***
+      const gx = this.root.position.x;
+      const gz = this.root.position.z;
+      const gy = this.getGroundY(gx, gz);
+      const jitter = 1.0 + Math.random()*1.4; // 1.0–2.4 m extra
+      const yCanopy = gy + this.swoop.hHigh + jitter;
+      if (!isNaN(yCanopy)) this.root.position.y = Math.max(this.root.position.y, yCanopy);
+    }
+
     if (next === 'active')   { this.setVisible(true);  this._setThreshold(0.25); }
     return this;
   }
@@ -226,42 +237,59 @@ export class Ghost {
     if (!isFinite(dist) || dist < 1e-6) return;
     _dir.multiplyScalar(1 / dist);
 
-    // turn-rate limitato (lerp tra direzione attuale e desiderata)
-    const yawRate = THREE.MathUtils.degToRad(this.params.yawRateDeg || 540);
-    const kTurn   = Math.min(1, yawRate * dt);
-    if (this.vel.lengthSq() < 1e-6) {
+    const yawRate = THREE.MathUtils.degToRad(this.params.yawRateDeg || 720);
+    let kTurn = Math.min(1, yawRate * dt);
+
+    // HARD-LOCK: se lontano, allinea subito → niente orbite
+    if (dist >= this.params.hardLockDist) {
       this.vel.copy(_dir);
     } else {
-      const cur = _tmpV.copy(this.vel).normalize();
-      cur.lerp(_dir, kTurn).normalize();
-      this.vel.copy(cur);
+      if (this.vel.lengthSq() < 1e-6) {
+        this.vel.copy(_dir);
+      } else {
+        const cur = _tmpV.copy(this.vel).normalize();
+        const cosA = THREE.MathUtils.clamp(cur.dot(_dir), -1, 1);
+        const ang = Math.acos(cosA);
+        if (ang > THREE.MathUtils.degToRad(35)) kTurn = Math.min(1, kTurn * 3.5);
+        cur.lerp(_dir, kTurn).normalize();
+        this.vel.copy(cur);
+      }
     }
 
-    // velocità con "burst" quando è lontano
+    // velocità (burst se lontano)
     let spd = this.params.speed;
     if (dist > this.swoop.far) spd *= this.params.burstMultiplier;
 
-    const step = spd * dt;
-    this.root.position.x += this.vel.x * step;
-    this.root.position.z += this.vel.z * step;
+    const stop    = Math.max(0, this.params.keepDistance || 0);
+    const arriveR = Math.max(1e-3, this.params.arriveRadius || 0.03);
+    const desired = Math.max(0, dist - stop);
 
-    // quota: alto quando lontano, basso quando vicino (senza toccare terra)
+    if (desired <= arriveR) {
+      this.root.position.x = target.x - _dir.x * stop;
+      this.root.position.z = target.z - _dir.z * stop;
+    } else {
+      const step = spd * dt;
+      this.root.position.x += this.vel.x * step;
+      this.root.position.z += this.vel.z * step;
+    }
+
+    // quota: alto quando lontano, poi scende (swoop), senza toccare terra
     const gy = this.getGroundY(this.root.position.x, this.root.position.z);
     const yHigh = gy + this.swoop.hHigh;
     const yLow  = gy + this.swoop.hLow;
     const yTarget = (dist > this.swoop.far) ? yHigh
                   : (dist <= this.swoop.near ? yLow
-                                             : THREE.MathUtils.lerp(yHigh, yLow, (this.swoop.far - dist) / (this.swoop.far - this.swoop.near)));
+                                             : THREE.MathUtils.lerp(yHigh, yLow, (this.swoop.far - dist)/(this.swoop.far - this.swoop.near)));
     const yK = Math.min(1, this.swoop.yLerp * dt);
     this.root.position.y = THREE.MathUtils.lerp(this.root.position.y, yTarget, yK);
 
-    // orientamento visivo verso la direzione di movimento
+    // orientamento visivo
     if (this.vel.lengthSq() > 1e-6) {
       const yawTarget = Math.atan2(this.vel.x, this.vel.z);
       let dy = yawTarget - this.yaw;
       while (dy >  Math.PI) dy -= 2*Math.PI;
       while (dy < -Math.PI) dy += 2*Math.PI;
-      this.yaw += dy * kTurn;
+      this.yaw += dy * Math.min(1, yawRate * dt);
       this.rig.rotation.y = this.yaw;
     }
   }
@@ -313,7 +341,7 @@ export class Ghost {
     this.model.position.z -= center.z;
     this.model.position.y -= box.min.y;
 
-    // scala con jitter
+    // scala con jitter (PICCOLI)
     const jitter = 1 + (Math.random()*2 - 1) * this.scaleJitter;
     const s = (this.targetHeight * jitter / (size.y || 1.0));
     this.model.scale.setScalar(s);
@@ -325,18 +353,14 @@ export class Ghost {
   _applyMaterials() {
     const meshes = [];
     this.model.traverse((o) => { if (o.isMesh) meshes.push(o); });
-
     for (const o of meshes) {
       const mats = buildGhostMaterialsForMesh(o, this.opacityBody);
       const arr = Array.isArray(mats) ? mats : [mats];
-
       this.materials.push(...arr);
-
       for (const m of arr) {
         const u = m?.userData?._ghostUniforms;
         if (u) this.uniformSets.push(u);
       }
-
       o.castShadow = false;
       o.receiveShadow = false;
       o.renderOrder = 10;
@@ -356,19 +380,9 @@ export class Ghost {
     this.model.position.x = 0; this.model.position.z = 0;
   }
 
-  // ===== DIAGNOSTICA =====
   setDebugMode(mode = 0) {
-    for (const s of this.uniformSets) { if (s?.uDebugMode) s.uDebugMode.value = mode | 0; }
-    return this;
-  }
-  logMaterialsDebug() {
-    console.log('--- Ghost debug ---');
-    console.log('uniformSets:', this.uniformSets?.length, this.uniformSets);
-    if (this.materials?.length) {
-      for (const m of this.materials) {
-        const c = m?.userData?._dbgCompileCount ?? 0;
-        console.log('material:', m?.name, 'compiled:', c, 'hasUniforms:', !!m?.userData?._ghostUniforms);
-      }
+    for (const s of this.uniformSets) {
+      if (s?.uDebugMode) s.uDebugMode.value = mode | 0;
     }
     return this;
   }
