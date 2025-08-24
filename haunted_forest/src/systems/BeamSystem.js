@@ -5,31 +5,49 @@ export class BeamSystem {
   constructor(opts = {}) {
     this.scene     = opts.scene;
     this.camera    = opts.camera;
-    this.obstacles = opts.obstacles || [];
 
+    // ---- Stato beam
     this.enabled    = true;
     this.firing     = false;
     this.overheated = false;
     this.heat       = 0;
 
-    this.halfAngleDeg = opts.halfAngleDeg ?? 15;
-    this.maxRange     = opts.maxRange     ?? 22;
-    this.exposureRate = opts.exposureRate ?? 1.2;
-    this.heatRise     = opts.heatRise     ?? 0.8;
-    this.heatFall     = opts.heatFall     ?? 0.7;
-    this.overheatHi   = opts.overheatHi   ?? 1.0;
-    this.overheatLo   = opts.overheatLo   ?? 0.6;
+    // ---- Parametri gameplay
+    this.halfAngleDeg = opts.halfAngleDeg ?? 18;
+    this.maxRange     = opts.maxRange     ?? 200;
+    this.exposureRate = opts.exposureRate ?? 3.5;
 
-    this._cosHalf = Math.cos(THREE.MathUtils.degToRad(this.halfAngleDeg));
-    this._ray     = new THREE.Raycaster();
-    this._tmpV    = new THREE.Vector3();
-    this._fwd     = new THREE.Vector3();
-    this._upNeg   = new THREE.Vector3(0, -1, 0);
+    // ---- Overheat interno (se vuoi agganciarlo all’HUD lo leggi da qui)
+    this.heatRise   = opts.heatRise   ?? 0.8;
+    this.heatFall   = opts.heatFall   ?? 0.7;
+    this.overheatHi = opts.overheatHi ?? 1.0;
+    this.overheatLo = opts.overheatLo ?? 0.6;
+
+    // ---- Smoothing del puntamento (riduce jitter del mouse)
+    this.smoothTau = opts.smoothTau ?? 0.12; // sec; 0 = off
+
+    // ---- Ostacoli per LOS (facoltativi; se non li setti → sempre visibile)
+    this.obstacles = opts.obstacles || [];
+
+    // ---- Cache / scratch
+    this._cosHalf   = Math.cos(THREE.MathUtils.degToRad(this.halfAngleDeg));
+    this._ray       = new THREE.Raycaster();
+    this._tmpV      = new THREE.Vector3();
+    this._fwdRaw    = new THREE.Vector3(0,0,-1);
+    this._fwdSmooth = new THREE.Vector3(0,0,-1);
+    this._posSmooth = new THREE.Vector3();
+    this._upNeg     = new THREE.Vector3(0,-1,0);
 
     this.hitsThisFrame = 0;
 
     this._buildVisual();
   }
+
+  // ---- API di comodo (usate dal main con , . 9 0)
+  incHalfAngle(d=1){ this.setHalfAngleDeg(this.halfAngleDeg + d); }
+  decHalfAngle(d=1){ this.setHalfAngleDeg(this.halfAngleDeg - d); }
+  incRange(d=10){ this.setMaxRange(this.maxRange + d); }
+  decRange(d=10){ this.setMaxRange(Math.max(2, this.maxRange - d)); }
 
   setFiring(v) { this.firing = !!v && !this.overheated; }
   setHalfAngleDeg(a) {
@@ -42,29 +60,46 @@ export class BeamSystem {
   update(dt, ghostsIterable) {
     this._updateHeat(dt);
 
+    // ---- Forward e posizione smussati
+    const camPos = this.camera.position;
+    this._fwdRaw.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+
+    if (this.smoothTau > 0) {
+      const a = 1 - Math.exp(-dt / this.smoothTau);
+      this._fwdSmooth.lerp(this._fwdRaw, a).normalize();
+      if (this._posSmooth.lengthSq() === 0) this._posSmooth.copy(camPos);
+      this._posSmooth.lerp(camPos, a);
+    } else {
+      this._fwdSmooth.copy(this._fwdRaw);
+      this._posSmooth.copy(camPos);
+    }
+
     let visualLen = this.maxRange;
     this.hitsThisFrame = 0;
 
     if (this.enabled && this.firing && !this.overheated && ghostsIterable) {
-      const camPos = this.camera.position;
-      const fwd = this._fwd.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
-
       for (const g of ghostsIterable) {
         if (!g || !g.root || g.state !== 'active') continue;
 
+        // punto da “illuminare” (leggermente sopra il centro)
         const aim = this._tmpV.copy(g.root.position);
         aim.y += 1.0;
 
-        const to = this._tmpV.clone().subVectors(aim, camPos);
+        // vettore camera→ghost (uso origine smussata)
+        const to   = this._tmpV.clone().subVectors(aim, this._posSmooth);
         const dist = to.length();
         if (dist > this.maxRange || dist < 1e-3) continue;
 
         to.multiplyScalar(1 / dist);
-        const cosAng = to.dot(fwd);
+
+        // test cono 3D
+        const cosAng = to.dot(this._fwdSmooth);
         if (cosAng < this._cosHalf) continue;
 
-        if (!this._hasLOS(camPos, aim, dist)) continue;
+        // LOS (se hai passato ostacoli)
+        if (!this._hasLOS(this._posSmooth, aim, dist)) continue;
 
+        // peso: centro del cono + vicino alla camera
         const wAngle = (cosAng - this._cosHalf) / (1 - this._cosHalf);
         const wDist  = 1 - (dist / this.maxRange);
         const weight = THREE.MathUtils.clamp(0.5 * wAngle + 0.5 * wDist, 0, 1);
@@ -80,25 +115,24 @@ export class BeamSystem {
   }
 
   _buildVisual() {
-    // Cono orientato lungo -Y (apice a y=0), così poi ruoto -Y → forward
     const geo = new THREE.ConeGeometry(1, 1, 36, 1, true);
     geo.translate(0, -0.5, 0);
 
     const mat = new THREE.MeshBasicMaterial({
       color: 0xfff2b3,
       transparent: true,
-      opacity: 0.28,             // un po’ più visibile
+      opacity: 0.28,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       side: THREE.DoubleSide,
-      fog: false,                 // niente fog sul cono
-      toneMapped: false           // niente tone mapping
+      fog: false,
+      toneMapped: false
     });
 
     this.cone = new THREE.Mesh(geo, mat);
     this.cone.visible = false;
     this.cone.renderOrder = 900;
-    this.cone.frustumCulled = false; // evita culling aggressivo
+    this.cone.frustumCulled = false;
     this.scene.add(this.cone);
   }
 
@@ -117,29 +151,23 @@ export class BeamSystem {
     this.cone.visible = show;
     if (!show) return;
 
-    const camPos = this.camera.position;
-    const fwd = this._fwd.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
-
     const len = THREE.MathUtils.clamp(length, 0.5, this.maxRange);
     const radius = Math.tan(THREE.MathUtils.degToRad(this.halfAngleDeg)) * len;
 
-    // Sposta l’apice un pelo davanti alla camera per evitare near clipping
+    // apice un filo davanti alla camera smussata (niente near clipping)
     const eps = Math.max(0.05, Math.min(0.25, 0.02 * len));
-    this.cone.position.set(
-      camPos.x + fwd.x * eps,
-      camPos.y + fwd.y * eps,
-      camPos.z + fwd.z * eps
-    );
+    const apex = this._posSmooth;
+    const fwd  = this._fwdSmooth;
 
-    // Ruota -Y → fwd
+    this.cone.position.set(apex.x + fwd.x * eps, apex.y + fwd.y * eps, apex.z + fwd.z * eps);
     this.cone.quaternion.setFromUnitVectors(this._upNeg, fwd);
     this.cone.scale.set(radius, len, radius);
     this.cone.updateMatrixWorld(true);
   }
 
-  _hasLOS(camPos, aim, dist) {
+  _hasLOS(origin, aim, dist) {
     if (!this.obstacles || this.obstacles.length === 0) return true;
-    this._ray.set(camPos, this._tmpV.copy(aim).sub(camPos).normalize());
+    this._ray.set(origin, this._tmpV.copy(aim).sub(origin).normalize());
     this._ray.far = dist;
     const hit = this._ray.intersectObjects(this.obstacles, true);
     return hit.length === 0;

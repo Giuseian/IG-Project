@@ -1,4 +1,4 @@
-// // // // main.js — Pines + FBM Fog (safe) + HUD + Ghost SPAWNER + WASD kinematic
+// // // // main.js — Pines + FBM Fog (safe) + HUD + Ghost SPAWNER + WASD + BeamSystem
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
@@ -8,6 +8,7 @@ import { ForestSystem } from './systems/ForestSystem.js';
 import { initHUD } from './ui/hud.js';
 import { GhostSpawner } from './systems/GhostSpawner.js';
 import { WASDController } from './systems/WASDController.js';
+import { BeamSystem } from './systems/BeamSystem.js';
 
 /* ---------- REGOLE COLORI PINO ---------- */
 const PINE_RULES = [
@@ -121,10 +122,10 @@ let animateFog = true;
 let debugEl;
 
 const player = { health:1.0, heat:0.0, score:0, beamOn:false, overheated:false };
-const HEAT_RATE=0.35, COOL_RATE=0.50, OVERHEAT_ON=1.0, OVERHEAT_OFF=0.60;
 
 let hud;
-let beam, beamTarget;
+let beam;      // spotlight scenico
+let beamSystem;
 
 // Systems
 let forest;
@@ -140,7 +141,7 @@ async function init(){
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x87a0c0);
 
-  // Fog più intensa (regolabile con [ e ])
+  // Fog (regolabile con [ e ])
   scene.fog = new THREE.FogExp2(0xDFE9F3, 1.6e-4);
 
   camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 20000);
@@ -180,7 +181,7 @@ async function init(){
   // HUD
   hud = initHUD();
 
-  // Beam (spento per ora)
+  // Spotlight (solo estetica, visibile quando il beam è attivo)
   beam = new THREE.SpotLight(0xcff2ff, 0, 60, THREE.MathUtils.degToRad(12), 0.35, 1.0);
   beam.visible = false;
   camera.add(beam);
@@ -189,7 +190,7 @@ async function init(){
   scene.add(beamTargetObj);
   beam.target = beamTargetObj;
 
-  // input utili al debug
+  // input (mouse L e F attivano/disattivano il beam)
   addEventListener('mousedown', (e)=>{ if (e.button === 0 && !player.overheated) player.beamOn = true; });
   addEventListener('mouseup',   (e)=>{ if (e.button === 0) player.beamOn = false; });
   addEventListener('keydown',   (e)=>{
@@ -200,6 +201,12 @@ async function init(){
     if (k === 'v' || k === 'V') spawner?.toggleAntiPopIn?.();
     if (k === 'c' || k === 'C') spawner?.cleanseAll?.();
     if (k === 'x' || k === 'X') spawner?.cleanseNearest?.(camera.position);
+
+    // tuning beam (angolo/range)
+    if (k === ',') beamSystem?.decHalfAngle(1);
+    if (k === '.') beamSystem?.incHalfAngle(1);
+    if (k === '9') beamSystem?.decRange(10);
+    if (k === '0') beamSystem?.incRange(10);
   });
 
   // Nebbia → materiali già presenti
@@ -226,7 +233,7 @@ async function init(){
   });
 
   // ---------------- GHOST SPAWNER ----------------
-  // Target = la tua posizione (vengono dritti verso di te)
+  // Target = posizione della camera
   const getFocusPos = () => new THREE.Vector3().copy(camera.position);
 
   spawner = new GhostSpawner({
@@ -239,7 +246,7 @@ async function init(){
     maxAlive: 5,
     spawnInterval: 1.2,
 
-    // Anello ampio -> distribuzione sparsa nella foresta
+    // anello ampio -> distribuzione sparsa nella foresta
     minR: 140,
     maxR: 260,
     minPlayerDist: 60,
@@ -253,12 +260,10 @@ async function init(){
     ghostOpts: {
       url: '/assets/models/ghost/ghost.glb',
 
-      // PIÙ PICCOLI
       targetHeight: env.pineTypicalHeight * 0.10,
       scaleJitter: 0.28,
       opacityBody: 0.78,
 
-      // Più rapidi, ma controllati
       speed: 14.0,
       burstMultiplier: 1.6,
 
@@ -272,17 +277,44 @@ async function init(){
 
       weave: { amp: 0.9, omega: 0.9, fadeNear: 8, fadeFar: 90, enabled: true },
 
-      // (facoltativo) distanza oltre cui “agganciano” la direzione al 100%
-      hardLockDist: 60, 
-      
-      // New Effetto Serpentina 
-      idleWeaveAmp: 0.35,      // ~18 cm di serpentina
-      idleWeaveOmega: 1.5      // velocità dell’ondeggio
+      hardLockDist: 60,
+
+      // Idle "serpentina" visiva
+      idleWeaveAmp: 0.35,
+      idleWeaveOmega: 1.5
     },
 
     protectSeconds: 1.0
   });
   await spawner.init();
+
+  // ===== BEAM SYSTEM (LOGICA + CONO VISIVO + SMOOTHING) =====
+  beamSystem = new BeamSystem({
+    scene,
+    camera,
+    halfAngleDeg: 20,                 // più largo → più facile colpire
+    maxRange: spawner.params.maxR,    // >= raggio max di spawn (260 nel tuo setup)
+    exposureRate: 4.2,                // carica più veloce (vs falloff 0.6 dei ghost)
+    smoothTau: 0.12                   // smussa direzione/posizione del cono
+  });
+  window.beamSystem = beamSystem;
+
+  // (OPZIONALE) Ostacoli per LOS
+  const USE_OCCLUSION = false;
+  if (USE_OCCLUSION) {
+    const occluderMeshes = [];
+    const cylGeo = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true);
+    const matOcc = new THREE.MeshBasicMaterial({ visible: false });
+    for (const c of forest.occluders) {
+      const m = new THREE.Mesh(cylGeo, matOcc);
+      m.position.set(c.pos.x, c.height * 0.5, c.pos.z);
+      m.scale.set(c.radius, c.height, c.radius);
+      m.updateMatrixWorld();
+      occluderMeshes.push(m);
+      scene.add(m);
+    }
+    beamSystem.setObstacles(occluderMeshes);
+  }
 
   // DESPAWN / CULLING
   spawner.params.despawnStyle       = 'deactivate';
@@ -333,16 +365,7 @@ async function setupForest(scene){
   return { forest, pineTypicalHeight };
 }
 
-/* --- utils fog + loop --- */
-function clamp01(x){ return Math.max(0, Math.min(1, x)); }
-function updateBeamHeat(dt){
-  if (player.beamOn && !player.overheated) player.heat += HEAT_RATE * dt;
-  else                                     player.heat -= COOL_RATE * dt;
-  player.heat = clamp01(player.heat);
-  if (!player.overheated && player.heat >= OVERHEAT_ON) { player.overheated = true; player.beamOn = false; }
-  else if (player.overheated && player.heat <= OVERHEAT_OFF) { player.overheated = false; }
-}
-
+/* --- loop --- */
 function animate(){
   requestAnimationFrame(animate);
 
@@ -350,20 +373,35 @@ function animate(){
   const dt   = Math.min(0.05, Math.max(0, tNow - _tPrev));
   _tPrev = tNow;
 
+  // input/camera
   playerCtl?.update(dt);
 
+  // fog time
   _fogShaders.forEach(s => { s.uniforms.fogTime.value = animateFog ? tNow : 0.0; });
 
-  updateBeamHeat(dt);
-  const activeBeam = player.beamOn && !player.overheated;
-  // (il cono è solo luce scenica quando attivo)
-  const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd);
-  // beam.target aggiornato nello setupDebug
+  // stato del pulsante beam (non considera ancora l'overheat)
+  const wantBeam = player.beamOn && !player.overheated;
 
+  // 1) prima aggiorniamo i ghost (decadimento esposizione)
   spawner?.update(dt);
 
-  hud.set(player.health, player.heat, player.score, { overheated: player.overheated, beamOn: activeBeam });
+  // 2) poi il beam (carica esposizione + smoothing direzione)
+  if (beamSystem) {
+    beamSystem.setFiring(wantBeam);
+    beamSystem.update(dt, spawner?.active || []);
 
+    // sincronizza HUD con lo stato reale del beam (heat/overheat)
+    player.heat       = beamSystem.heat;
+    player.overheated = beamSystem.overheated;
+  }
+
+  // spotlight visivo (si spegne se overheat)
+  beam.visible = player.beamOn && !player.overheated;
+
+  // HUD
+  hud.set(player.health, player.heat, player.score, { overheated: player.overheated, beamOn: player.beamOn && !player.overheated });
+
+  // debug info
   const g = spawner?.firstActive?.();
   const thr = (g && g._getThreshold) ? g._getThreshold() : (g?.uniformSets?.[0]?.uThreshold?.value ?? 1.0);
   const dist = g ? Math.hypot(g.root.position.x - camera.position.x, g.root.position.z - camera.position.z) : 0;
@@ -396,27 +434,27 @@ function setupDebug(beamTargetObj){
 
   addEventListener('keydown', (e)=>{
     switch(e.key){
-      case '[': scene.fog.density = clamp01(scene.fog.density - 1e-6); break;
-      case ']': scene.fog.density = clamp01(scene.fog.density + 1e-6); break;
+      case '[': scene.fog.density = Math.max(0, scene.fog.density - 1e-6); break;
+      case ']': scene.fog.density = Math.min(1, scene.fog.density + 1e-6); break;
       case '-': renderer.toneMappingExposure = Math.max(0.2, renderer.toneMappingExposure - 0.05); break;
       case '=':
       case '+': renderer.toneMappingExposure = Math.min(3.0, renderer.toneMappingExposure + 0.05); break;
       case 't':
-      case 'T': animateFog = !animateFog; break; // << spostato su T
+      case 'T': animateFog = !animateFog; break;
       default: break;
     }
   });
 
-  // mantieni puntamento spotlight davanti alla camera (se mai la useremo)
+  // punta lo spotlight davanti alla camera
   const fwd = new THREE.Vector3();
   const updateBeamTarget = ()=>{
     camera.getWorldDirection(fwd);
     beamTargetObj.position.copy(camera.position).addScaledVector(fwd, 60);
   };
-  // aggiorna ad ogni frame tramite rAF hook
   const _origRender = renderer.render.bind(renderer);
   renderer.render = (a,b)=>{ updateBeamTarget(); _origRender(a,b); };
 }
+
 function updateDebug(spStats = {}){
   if(!debugEl) return;
   const heatPct = Math.round(player.heat*100);
@@ -427,100 +465,17 @@ function updateDebug(spStats = {}){
     ` pool=${spStats.pool ?? 0} next=${(spStats.nextIn ?? 0).toFixed?.(2) ?? '0.00'}` +
     ` mode=${spStats.mode ?? '-'} anti=${spStats.antiPopIn ? 'on' : 'off'}`;
 
+  const beamInfo = window.beamSystem
+    ? ` | cone:${window.beamSystem.halfAngleDeg}° range:${window.beamSystem.maxRange} hits:${window.beamSystem.hitsThisFrame}`
+    : '';
+
   debugEl.innerHTML =
     `FogExp2+FBM density: ${scene.fog?.density.toExponential(2)}  |  ` +
     `Exposure: ${renderer.toneMappingExposure.toFixed(2)}  |  ` +
-    `shaders:${_fogShaders.size}  |  anim:${animateFog?'ON':'OFF'}${spLine}\n` +
+    `shaders:${_fogShaders.size}  |  anim:${animateFog?'ON':'OFF'}${spLine}${beamInfo}\n` +
     `Heat: ${player.overheated?'<span style="color:#ff6b6b">'+heatPct+'%</span>':heatPct+'%'}  ` +
-    `| Beam: ${beamState}  (Mouse L/F | P:spawn 1, V:antiPopIn, C:cleanse all, X:cleanse nearest)`;
+    `| Beam: ${beamState}  (Mouse L/F | P:spawn 1, V:antiPopIn, C:cleanse all, X:cleanse nearest, ,/. angle, 9/0 range)`;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
