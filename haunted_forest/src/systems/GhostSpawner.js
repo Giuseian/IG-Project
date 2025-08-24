@@ -289,8 +289,13 @@ export class GhostSpawner {
 
       const g = this._getFromPool();
       if (!g) return false;
+
+      // >>> reset cinematico prima di spawnare
+      g.resetKinematics?.();
+
       g.setPosition(cand.x, cand.y, cand.z).addTo(this.scene);
       g.appear();
+
       this.active.add(g);
       // finestra di protezione anti-despawn/anti-pop
       this._protectUntil.set(g, this._time + (this.params.protectSeconds || 0));
@@ -376,4 +381,3 @@ export class GhostSpawner {
     return false;
   }
 }
-

@@ -55,7 +55,9 @@ function buildGhostMaterialsForMesh(mesh, opacityBody) {
 const _wRoot  = new THREE.Vector3();
 const _wModel = new THREE.Vector3();
 const _dir    = new THREE.Vector3();
+const _right  = new THREE.Vector3();
 const _tmpV   = new THREE.Vector3();
+const _tmpV2  = new THREE.Vector3();
 
 export class Ghost {
   constructor(opts = {}) {
@@ -100,11 +102,11 @@ export class Ghost {
       cleanseDuration:  0.8,
       speed:            opts.speed ?? 6.0,
       burstMultiplier:  opts.burstMultiplier ?? 1.6,
-      yawRateDeg:       opts.yawRateDeg ?? 720,  // alto = curvano subito
+      yawRateDeg:       opts.yawRateDeg ?? 720,
       keepDistance:     opts.keepDistance ?? 0.0,
       arriveRadius:     opts.arriveRadius ?? 1.2,
       exposureFalloff:  0.6,
-      hardLockDist:     opts.hardLockDist ?? 60  // oltre questa distanza aggancio diretto
+      hardLockDist:     opts.hardLockDist ?? 60
     };
     this.swoop = {
       far:   opts.swoop?.far   ?? 120,
@@ -113,6 +115,23 @@ export class Ghost {
       hHigh: opts.swoop?.hHigh ?? 7.2,
       yLerp: opts.swoop?.yLerp ?? 3.2
     };
+
+    // offset modello & snap iniziale
+    this.yawModelOffsetDeg = opts.yawModelOffsetDeg ?? 0;
+    this.yawModelOffset    = THREE.MathUtils.degToRad(this.yawModelOffsetDeg);
+    this.alignSnapWindow   = opts.alignSnapWindow ?? 0.15;
+    this._alignSnapT       = 0;
+
+    // >>> SERPENTINA REALE SULLA TRAIETTORIA
+    this.weave = {
+      enabled:  opts.weave?.enabled ?? true,
+      amp:      opts.weave?.amp ?? 0.35,     // metri di deviazione laterale
+      omega:    opts.weave?.omega ?? 1.2,    // velocità oscillazione
+      fadeNear: opts.weave?.fadeNear ?? 10,   // sotto questa distanza → 0
+      fadeFar:  opts.weave?.fadeFar  ?? 80,   // sopra questa → 100%
+      phase:    Math.random() * Math.PI * 2,
+    };
+    this._weavePrev = new THREE.Vector3(0,0,0);
 
     this.state    = 'inactive';
     this.tState   = 0;
@@ -135,10 +154,10 @@ export class Ghost {
     this._ensureHierarchy();
     this._zeroLocalOffsetsXZ();
 
-    // stato iniziale
+    if (this.yawModelOffset) this.model.rotation.y += this.yawModelOffset;
+
     this._setThreshold(0.98);
     this.setVisible(false);
-
     return this;
   }
 
@@ -147,6 +166,13 @@ export class Ghost {
   getPosition(out = new THREE.Vector3()) { return out.copy(this.root.position); }
   setVisible(v) { this.root.visible = !!v; return this; }
   setIdleParams(partial = {}) { Object.assign(this.idle, partial); return this; }
+
+  resetKinematics(){
+    this.vel.set(0,0,0);
+    this._alignSnapT = 0;
+    this._weavePrev.set(0,0,0);
+    return this;
+  }
 
   spawnAt(x, y, z) { this.setPosition(x, y, z); return this.appear(); }
   appear()    { return this._enter('appearing'); }
@@ -194,24 +220,57 @@ export class Ghost {
     this.state = next;
     this.tState = 0;
 
-    if (next === 'inactive') { this.setVisible(false); this.exposure = 0; this._setThreshold(0.98); }
+    if (next === 'inactive') {
+      this.setVisible(false);
+      this.exposure = 0;
+      this._setThreshold(0.98);
+    }
 
     if (next === 'appearing'){
       this.setVisible(true);
       this.exposure = 0;
       this._setThreshold(0.98);
 
-      // *** PARTENZA DALL'ALTO (canopy) ***
       const gx = this.root.position.x;
       const gz = this.root.position.z;
       const gy = this.getGroundY(gx, gz);
-      const jitter = 1.0 + Math.random()*1.4; // 1.0–2.4 m extra
+      const jitter = 1.0 + Math.random()*1.4;
       const yCanopy = gy + this.swoop.hHigh + jitter;
       if (!isNaN(yCanopy)) this.root.position.y = Math.max(this.root.position.y, yCanopy);
+
+      const target = (typeof this.getTargetPos === 'function') ? this.getTargetPos() : null;
+      if (target) {
+        this._alignInstant(target);
+        this._alignSnapT = this.alignSnapWindow;
+      }
+      this._weavePrev.set(0,0,0);
     }
 
-    if (next === 'active')   { this.setVisible(true);  this._setThreshold(0.25); }
+    if (next === 'active') {
+      this.setVisible(true);
+      this._setThreshold(0.25);
+      const target = (typeof this.getTargetPos === 'function') ? this.getTargetPos() : null;
+      if (target) {
+        this._alignInstant(target);
+        this._alignSnapT = Math.max(this._alignSnapT, this.alignSnapWindow * 0.5);
+      }
+      this._weavePrev.set(0,0,0);
+    }
     return this;
+  }
+
+  _alignInstant(target){
+    _dir.subVectors(target, this.root.position);
+    _dir.y = 0;
+    const len = _dir.length();
+    if (len < 1e-6) {
+      _dir.set(0,0,1);
+    } else {
+      _dir.multiplyScalar(1/len);
+    }
+    this.vel.copy(_dir);
+    this.yaw = Math.atan2(_dir.x, _dir.z);
+    this.rig.rotation.y = this.yaw;
   }
 
   _updateAppearing(dt) {
@@ -240,19 +299,35 @@ export class Ghost {
     const yawRate = THREE.MathUtils.degToRad(this.params.yawRateDeg || 720);
     let kTurn = Math.min(1, yawRate * dt);
 
-    // HARD-LOCK: se lontano, allinea subito → niente orbite
-    if (dist >= this.params.hardLockDist) {
+    if (this._alignSnapT > 0) {
       this.vel.copy(_dir);
+      const yawTarget = Math.atan2(_dir.x, _dir.z);
+      this.yaw = yawTarget;
+      this.rig.rotation.y = this.yaw;
+      this._alignSnapT -= dt;
     } else {
-      if (this.vel.lengthSq() < 1e-6) {
+      if (dist >= this.params.hardLockDist) {
         this.vel.copy(_dir);
       } else {
-        const cur = _tmpV.copy(this.vel).normalize();
-        const cosA = THREE.MathUtils.clamp(cur.dot(_dir), -1, 1);
-        const ang = Math.acos(cosA);
-        if (ang > THREE.MathUtils.degToRad(35)) kTurn = Math.min(1, kTurn * 3.5);
-        cur.lerp(_dir, kTurn).normalize();
-        this.vel.copy(cur);
+        if (this.vel.lengthSq() < 1e-6) {
+          this.vel.copy(_dir);
+        } else {
+          const cur = _tmpV.copy(this.vel).normalize();
+          const cosA = THREE.MathUtils.clamp(cur.dot(_dir), -1, 1);
+          const ang = Math.acos(cosA);
+          if (ang > THREE.MathUtils.degToRad(35)) kTurn = Math.min(1, kTurn * 3.5);
+          cur.lerp(_dir, kTurn).normalize();
+          this.vel.copy(cur);
+        }
+      }
+
+      if (this.vel.lengthSq() > 1e-6) {
+        const yawTarget = Math.atan2(this.vel.x, this.vel.z);
+        let dy = yawTarget - this.yaw;
+        while (dy >  Math.PI) dy -= 2*Math.PI;
+        while (dy < -Math.PI) dy += 2*Math.PI;
+        this.yaw += dy * Math.min(1, yawRate * dt);
+        this.rig.rotation.y = this.yaw;
       }
     }
 
@@ -273,7 +348,28 @@ export class Ghost {
       this.root.position.z += this.vel.z * step;
     }
 
-    // quota: alto quando lontano, poi scende (swoop), senza toccare terra
+    // >>> SERPENTINA: offset laterale sul root
+    if (this.weave.enabled) {
+      // right = ortogonale alla direzione attuale
+      if (this.vel.lengthSq() > 1e-6) _right.set(this.vel.z, 0, -this.vel.x).normalize();
+      else                             _right.set(_dir.z, 0, -_dir.x).normalize();
+
+      // fade con distanza e vicino al target
+      const kDist = THREE.MathUtils.clamp(
+        (dist - this.weave.fadeNear) / Math.max(1e-3, (this.weave.fadeFar - this.weave.fadeNear)), 0, 1
+      );
+      const kNear = THREE.MathUtils.clamp(desired / (arriveR * 1.5), 0, 1);
+
+      const A = this.weave.amp * kDist * kNear;
+      const s = Math.sin(this.weave.omega * this._time + this.weave.phase);
+
+      const off = _tmpV.copy(_right).multiplyScalar(A * s); // offset istantaneo
+      const delta = _tmpV2.copy(off).sub(this._weavePrev);  // differenza frame-to-frame
+      this.root.position.add(delta);
+      this._weavePrev.copy(off);
+    }
+
+    // quota: alto quando lontano, poi scende (swoop)
     const gy = this.getGroundY(this.root.position.x, this.root.position.z);
     const yHigh = gy + this.swoop.hHigh;
     const yLow  = gy + this.swoop.hLow;
@@ -282,16 +378,6 @@ export class Ghost {
                                              : THREE.MathUtils.lerp(yHigh, yLow, (this.swoop.far - dist)/(this.swoop.far - this.swoop.near)));
     const yK = Math.min(1, this.swoop.yLerp * dt);
     this.root.position.y = THREE.MathUtils.lerp(this.root.position.y, yTarget, yK);
-
-    // orientamento visivo
-    if (this.vel.lengthSq() > 1e-6) {
-      const yawTarget = Math.atan2(this.vel.x, this.vel.z);
-      let dy = yawTarget - this.yaw;
-      while (dy >  Math.PI) dy -= 2*Math.PI;
-      while (dy < -Math.PI) dy += 2*Math.PI;
-      this.yaw += dy * Math.min(1, yawRate * dt);
-      this.rig.rotation.y = this.yaw;
-    }
   }
 
   _updateCleansing(dt) {
@@ -322,7 +408,7 @@ export class Ghost {
     const ySafe = Math.min(this.idle.maxY, Math.max(floorLocal, y));
     this.rig.position.y = ySafe;
 
-    // sway
+    // sway (pitch/roll leggeri)
     const rx = this.idle.swayAmpX * Math.sin(this.idle.swayOmega * t + ph * 0.7);
     const rz = this.idle.swayAmpZ * Math.sin(this.idle.swayOmega * t + ph * 0.9);
     this.rig.rotation.x = rx;
@@ -341,7 +427,6 @@ export class Ghost {
     this.model.position.z -= center.z;
     this.model.position.y -= box.min.y;
 
-    // scala con jitter (PICCOLI)
     const jitter = 1 + (Math.random()*2 - 1) * this.scaleJitter;
     const s = (this.targetHeight * jitter / (size.y || 1.0));
     this.model.scale.setScalar(s);

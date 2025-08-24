@@ -270,8 +270,14 @@ async function init(){
       // Swoop: partono molto alti, scendono tardi
       swoop: { far: 120, near: 55, hLow: 1.6, hHigh: 60.0, yLerp: 3.2 },
 
+      weave: { amp: 0.9, omega: 0.9, fadeNear: 8, fadeFar: 90, enabled: true },
+
       // (facoltativo) distanza oltre cui “agganciano” la direzione al 100%
-      hardLockDist: 60
+      hardLockDist: 60, 
+      
+      // New Effetto Serpentina 
+      idleWeaveAmp: 0.35,      // ~18 cm di serpentina
+      idleWeaveOmega: 1.5      // velocità dell’ondeggio
     },
 
     protectSeconds: 1.0
