@@ -222,45 +222,6 @@ export class WispSystem {
     }
   }
 
-  // Emissione a "guaina" attorno al corpo (cilindro morbido)
-  emitSheath(center, height=2.0, radius=0.8, count=40, opt = {}){
-
-    const up     = opt.up ?? 1.2;
-    const out    = opt.out ?? 0.5;
-    const size   = opt.size ?? [0.7, 1.8];
-    const life   = opt.life ?? [0.9, 1.6];
-    const tint   = opt.tint ?? new THREE.Color(0x9fe3ff);
-    const spread = opt.spread ?? 0.35;
-
-    for (let i=0;i<count;i++){
-        const ang = Math.random() * Math.PI * 2;
-        const y01 = Math.random();
-        const y   = (y01 - 0.5) * height;                 // [-H/2, H/2]
-        const r   = radius * (0.85 + Math.random()*0.3);  // r un po’ variabile
-
-        const rx = Math.cos(ang) * r;
-        const rz = Math.sin(ang) * r;
-
-        const pos = new THREE.Vector3(center.x + rx, center.y + y, center.z + rz);
-
-        // prevalenza verso l’alto, con un pelo radiale
-        const outward = new THREE.Vector3(rx, 0, rz).normalize();
-        outward.x += (Math.random()-0.5)*spread;
-        outward.z += (Math.random()-0.5)*spread;
-
-        const vel = outward.multiplyScalar(out).add(new THREE.Vector3(0, up*(0.8+Math.random()*0.6), 0));
-
-        this._spawnOne({
-        pos, vel,
-        size0: THREE.MathUtils.lerp(size[0], size[1], Math.random()*0.35),
-        size1: THREE.MathUtils.lerp(size[0], size[1], 0.65 + Math.random()*0.35),
-        life:  THREE.MathUtils.lerp(life[0], life[1], 0.35 + Math.random()*0.65),
-        spin:  (Math.random()*2-1)*2.0,
-        color: tint
-        });
-    }
-  }
-
 
   _spawnOne({ pos, vel, size0, size1, life, spin, color }){
     // trova uno slot

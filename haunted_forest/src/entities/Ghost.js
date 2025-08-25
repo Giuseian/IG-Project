@@ -1343,6 +1343,7 @@ export class Ghost {
   }
 
   /* ---------- wisps (hit + burst) ---------- */
+  // RING BURNING 
   _emitWispHit(deltaExp){
     if (!window.wisps || deltaExp <= 0) return;
 
@@ -1373,6 +1374,41 @@ export class Ghost {
     });
   }
 
+  // FIRE NEAR GHOST 
+  // _emitWispHit(deltaExp){
+  //   if (!window.wisps || deltaExp <= 0) return;
+
+  //   // colore dipende dall’exposure
+  //   const c1 = new THREE.Color(0x33d1ff);
+  //   const c2 = new THREE.Color(0xffd166);
+  //   const c3 = new THREE.Color(0xff6b6b);
+  //   const t  = THREE.MathUtils.clamp(this.exposure, 0, 1);
+  //   const col = (t < 0.6)
+  //     ? c1.clone().lerp(c2, THREE.MathUtils.smoothstep(t, 0.20, 0.60))
+  //     : c2.clone().lerp(c3, THREE.MathUtils.smoothstep(t, 0.60, 1.00));
+
+  //   // centro guaina: metà altezza del ghost
+  //   const H     = Math.max(1.0, this.targetHeight * 0.9);
+  //   const center= new THREE.Vector3(
+  //     this.root.position.x,
+  //     this.root.position.y + this.rig.position.y + H * 0.5,
+  //     this.root.position.z
+  //   );
+
+  //   // r più stretto del ring a terra
+  //   const rad   = Math.max(0.35, (this._ring?.radius ?? 2.2) * 0.45);
+  //   const count = Math.max(2, Math.floor(6 + 80 * deltaExp)); // scala con incremento exposure
+
+  //   window.wisps.emitSheath(center, H, rad, count, {
+  //     up: 1.2, out: 0.55, spread: 0.28,
+  //     size: [0.6, 1.6],
+  //     life: [0.8, 1.5],
+  //     tint: col
+  //   });
+  // }
+
+
+  // RING BURNING 
   _emitWispBurst(){
     if (!window.wisps) return;
     const x = this.root.position.x;
@@ -1387,6 +1423,24 @@ export class Ghost {
       tint: new THREE.Color(0xffd166)
     });
   }
+
+  // FIRE NEAR GHOST 
+  // _emitWispBurst(){
+  //   if (!window.wisps) return;
+  //   const H = Math.max(1.0, this.targetHeight * 0.9);
+  //   const center = new THREE.Vector3(
+  //     this.root.position.x,
+  //     this.root.position.y + this.rig.position.y + H * 0.5,
+  //     this.root.position.z
+  //   );
+  //   window.wisps.emitBurst(center, 140, {
+  //     up: 2.6, out: 2.0,
+  //     size: [1.0, 2.6],
+  //     life: [1.2, 2.0],
+  //     tint: new THREE.Color(0xffd166)
+  //   });
+  // }
+
 
   setDebugMode(mode = 0) {
     for (const s of this.uniformSets) {
