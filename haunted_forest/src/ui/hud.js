@@ -41,7 +41,8 @@ export function initHUD() {
       }
       .hearts .h.dim{ opacity:.4; filter: grayscale(.15) saturate(.8); }
       .hearts .h.off{ opacity:0; transform: scale(.8); pointer-events:none; }
-
+      /* Keycaps: stato attivo (per F3) */
+      .keycap.on{box-shadow: 0 0 12px #22e3ff80, inset 0 0 0 2px #22e3ff55; }
     `;
 
     /* ===== PIXEL RETRO ===== */
@@ -111,6 +112,15 @@ export function initHUD() {
       `;
     }
 
+    /* ===== Sanctuary state glow (comune a entrambe le skin) ===== */
+    css += `
+      .badge.state{ transition: filter .12s ease, box-shadow .12s ease, background-color .12s ease, color .12s ease; }
+      .badge.state.idle{ background:#112036; color:#cfe3ff; box-shadow:none; animation:none; }
+      .badge.state.armed{ background:#3a1518; color:#ffd2d2; box-shadow:0 0 12px #ff6b6b66, inset 0 0 8px #ff6b6b33; animation: hudPulseRed .85s infinite; }
+      .badge.state.purifying{ background:#3a2a15; color:#ffe6b3; box-shadow:0 0 10px #f59e0b55, inset 0 0 6px #f59e0b33; animation:none; }
+      .badge.state.done{ background:#13311c; color:#bfffd9; box-shadow:0 0 10px #10b98155, inset 0 0 6px #10b98133; animation:none; }
+    `;
+
     document.head.appendChild(style);
     style.textContent = css;
   }
@@ -123,15 +133,14 @@ export function initHUD() {
   root.appendChild(left); root.appendChild(right);
   document.body.appendChild(root);
 
-  // Sanctuary (LEFT)
+  // Sanctuary (LEFT) — rimosso badge distanza
   const leftSanct = document.createElement('div');
   leftSanct.className = 'tile compact';
   leftSanct.innerHTML = `
     <div class="tabTitle">SANCTUARY</div>
     <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap;">
-      <span id="hud-sanct-state" class="badge">idle</span>
+      <span id="hud-sanct-state" class="badge state idle">idle</span>
       <span id="hud-sanct-pct" class="badge">0%</span>
-      <span id="hud-sanct-dist" class="badge">d: 0.0m</span>
       <span id="hud-sanct-safe" class="badge hud-hide">SAFE</span>
     </div>
     <div class="meter micro" id="hud-sanct-meter"><div class="fill" id="hud-sanct-fill"></div></div>
@@ -165,6 +174,65 @@ export function initHUD() {
     </div>`;
   right.appendChild(tBeam);
 
+
+    // --- Controls Keycaps (bottom-right): 4 tastierini separati ---
+  const keys = document.createElement('div');
+  keys.id = 'hud-keys';
+  keys.innerHTML = `
+    <button id="key-minus" class="keycap" title="Narrow beam (,)">
+      <span class="k">–</span><small>cone</small>
+    </button>
+    <button id="key-plus" class="keycap" title="Widen beam (.)">
+      <span class="k">+</span><small>cone</small>
+    </button>
+    <button id="key-beam" class="keycap key-accent" title="F: Beam ON/OFF">
+      <span class="k">F</span><small>beam</small>
+    </button>
+    <button id="key-nd" class="keycap" title="Night / Day">
+      <span class="k" id="key-nd-ico">🌙</span><small>mode</small>
+    </button>
+    <button id="key-debug" class="keycap" title="Debug">
+      <span class="k">F3</span><small>debug</small>
+    </button>
+  `;
+  Object.assign(keys.style,{
+    position:'fixed',
+    left:'50%',               // centrato
+    right:'auto',
+    bottom:'14px',
+    transform:'translateX(-50%)', // centrato
+    zIndex:10001,
+    display:'flex',
+    gap:'8px',
+    alignItems:'center',
+    pointerEvents:'auto'
+  });
+  document.body.appendChild(keys);
+
+  // stile dei keycaps
+  if (!document.getElementById('hud-style-keycaps')) {
+    const cs = document.createElement('style'); cs.id='hud-style-keycaps';
+    cs.textContent = `
+      .keycap{
+        width:56px;height:56px;border:0;border-radius:12px;cursor:pointer;
+        color:#e8f1ff;background:#1f2a3aee;backdrop-filter:blur(4px);
+        box-shadow:0 10px 24px #0009, inset 0 1px 0 #ffffff22;
+        display:flex;flex-direction:column;align-items:center;justify-content:center;
+      }
+      .keycap .k{font-weight:800;font-size:18px;line-height:1;margin-bottom:2px}
+      .keycap small{font-size:10px;opacity:.8;letter-spacing:.2px}
+      .keycap.key-accent{background:#17445fee}
+      .keycap.on{box-shadow:0 0 14px #22f3, inset 0 1px 0 #ffffff33; background:#216a8bee}
+      #hud-keys .keycap:active{ transform:translateY(1px); }
+    `;
+    document.head.appendChild(cs);
+  }
+
+
+
+
+
+
   // Offscreen indicators
   const indicLayer = document.createElement('div'); indicLayer.id='indicator-layer'; document.body.appendChild(indicLayer);
   const indicPool = [];
@@ -176,6 +244,20 @@ export function initHUD() {
     const rec = { el, arrow, busy:true }; indicPool.push(rec); return rec;
   }
   function _releaseAll(){ for (const it of indicPool){ it.busy=false; it.el.style.display='none'; } }
+
+  // --- Totem edge indicator (ROMBO ciano)
+  const totemEl = document.createElement('div');
+  totemEl.id = 'totem-edge';
+  totemEl.style.cssText = `
+    position:fixed; left:-9999px; top:-9999px; z-index:9998;
+    width:18px; height:18px; 
+    border:3px solid #7ee3ff; border-radius:4px;
+    box-shadow:0 0 12px #7ee3ff80, inset 0 0 8px #7ee3ff60;
+    background: radial-gradient(#bff4ff80 12%, transparent 70%);
+    transform: translate(-50%,-50%) rotate(45deg) scale(1);
+    opacity:0; pointer-events:none;
+  `;
+  document.body.appendChild(totemEl);
 
   // ---------- HANDLES ----------
   const els = {
@@ -190,8 +272,7 @@ export function initHUD() {
     sanctFill:  document.getElementById('hud-sanct-fill'),
     sanctPct:   document.getElementById('hud-sanct-pct'),
     sanctState: document.getElementById('hud-sanct-state'),
-    sanctSafe:  document.getElementById('hud-sanct-safe'),
-    sanctDist:  document.getElementById('hud-sanct-dist'),
+    sanctSafe:  document.getElementById('hud-sanct-safe')
   };
 
   // heat color util
@@ -213,18 +294,18 @@ export function initHUD() {
     els.healthFill.style.width = `${h*100}%`;
     els.healthText.textContent = Math.round(h*100);
 
-    // Hearts: 3 cuori → 6 mezzi. Quello “in uso” è dim, i successivi spariscono.
+    // Hearts
     const segments = h * 3;
     const full = Math.floor(segments + 1e-6);
-    const frac = segments - full; // 0.. <1
+    const frac = segments - full;
     els.heartEls.forEach((node, i)=>{
       node.classList.remove('dim','off');
       if (i < full) {
-        // pieno (visibile)
+        // pieno
       } else if (i === full && frac > 0) {
-        node.classList.add('dim'); // sbiadito mentre prende danno
+        node.classList.add('dim');
       } else {
-        node.classList.add('off'); // sparisce oltre la soglia
+        node.classList.add('off');
       }
     });
 
@@ -247,19 +328,58 @@ export function initHUD() {
     els.scoreText.textContent = String(score ?? 0);
   }
 
+
+  // --- Controls handlers esposti al main ---
+  let _handlers = {
+    onConePlus:null, onConeMinus:null, onBeamToggle:null, onDayNightToggle:null, onDebugToggle:null,
+    };
+    const btnMinus = document.getElementById('key-minus');
+    const btnPlus  = document.getElementById('key-plus');
+    const btnBeam  = document.getElementById('key-beam');
+    const btnND    = document.getElementById('key-nd');
+    const icoND    = document.getElementById('key-nd-ico');
+    const btnDebug = document.getElementById('key-debug');
+
+    btnMinus.onclick = ()=> _handlers.onConeMinus?.();
+    btnPlus.onclick  = ()=> _handlers.onConePlus?.();
+    btnBeam.onclick  = ()=> _handlers.onBeamToggle?.();
+    btnND.onclick    = ()=> _handlers.onDayNightToggle?.();
+    btnDebug.onclick = ()=> _handlers.onDebugToggle?.();
+
+    function setControlsHandlers(h={}){ Object.assign(_handlers, h); }
+    // (opzionale) stato visivo ON/OFF del tasto debug
+    function setDebugActive(on){ btnDebug.classList.toggle('on', !!on); }
+    function setDayNightIcon(isNight){ icoND.textContent = isNight ? '🌙' : '☀︎'; }
+    btnDebug.onclick = ()=> _handlers.onDebugToggle?.();
+
+    // tieni allineato il keycap BEAM allo stato reale
+    const __origSet = set;
+    set = function(health01, heat01, score, opts={}){
+      __origSet(health01, heat01, score, opts);
+      btnBeam.classList.toggle('on', !!opts.beamOn);
+  };
+
+
   function setSanctuary(info) {
     const state = info?.state || 'idle';
-    const t = Math.max(0, Math.min(1, info?.t ?? 0));
-    els.sanctFill.style.width = `${Math.round(t*100)}%`;
-    els.sanctPct.textContent  = `${Math.round(t*100)}%`;
-    els.sanctState.textContent = state;
+    const tIn = Math.max(0, Math.min(1, info?.t ?? 0));
 
+    // Barra: se DONE → azzera (pronta per il prossimo)
+    const tBar = (state === 'done') ? 0 : tIn;
+    els.sanctFill.style.width = `${Math.round(tBar*100)}%`;
+    els.sanctPct.textContent  = `${Math.round(tBar*100)}%`;
+
+    // Stato badge + glow
+    els.sanctState.textContent = state;
+    els.sanctState.className = `badge state ${state}`;
+
+    // Colore barra coerente con stato
     const tint = (s)=>({idle:'#3b82f6',armed:'#ef4444',purifying:'#f59e0b',done:'#10b981'}[s]||'#3b82f6');
     els.sanctFill.style.background = (SKIN==='pixel')
       ? `repeating-linear-gradient(90deg, ${tint(state)} 0 6px, ${tint(state)}cc 6px 12px)`
       : `linear-gradient(90deg, ${tint(state)}, ${tint(state)}cc)`;
 
-    if (info?.dist != null) els.sanctDist.textContent = `d: ${(+info.dist).toFixed(1)}m`;
+    // SAFE badge (resta com'era)
     els.sanctSafe?.classList.toggle('hud-hide', !(info?.safe));
   }
 
@@ -278,6 +398,24 @@ export function initHUD() {
     }
   }
 
+  // NEW: indicatore rombo per totem
+  function setTotemIndicator(item){
+    if (!item){
+      totemEl.style.left = '-9999px';
+      totemEl.style.top  = '-9999px';
+      totemEl.style.opacity = '0';
+      totemEl.style.transform = `translate(-50%,-50%) rotate(45deg) scale(1)`;
+      return;
+    }
+    const a = Math.max(0, Math.min(1, item.alpha ?? 1));
+    const s = Math.max(0.5, Math.min(1.3, item.scale ?? 1));
+    const ang = (item.ang ?? 0) + Math.PI * 0.25;
+    totemEl.style.left = Math.round(item.x) + 'px';
+    totemEl.style.top  = Math.round(item.y) + 'px';
+    totemEl.style.opacity = String(a);
+    totemEl.style.transform = `translate(-50%,-50%) rotate(${ang}rad) scale(${s})`;
+  }
+
   // defaults
   set(1,0,0,{overheated:false,beamOn:false});
 
@@ -288,5 +426,5 @@ export function initHUD() {
     location.reload();
   };
 
-  return { root, set, setSanctuary, setDebug, setIndicators };
+  return { root, set, setSanctuary, setDebug, setIndicators, setControlsHandlers, setDayNightIcon, setDebugActive };
 }
