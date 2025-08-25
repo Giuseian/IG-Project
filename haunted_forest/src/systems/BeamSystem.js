@@ -296,6 +296,36 @@ export class BeamSystem {
     const hit = this._ray.intersectObjects(this.obstacles, true);
     return hit.length === 0;
   }
+
+
+  reset(){
+    this.enabled    = true;
+    this.firing     = false;
+    this.overheated = false;
+    this.heat       = 0;
+
+    this.aiming = false;
+    this.yawOffset = 0;
+    this.pitchOffset = 0;
+
+    this.hitsThisFrame = 0;
+    this.focusedGhost = null;
+    this.focusedWeight = 0;
+    this.focusedDist = Infinity;
+    this.focusedExposure = 0;
+
+    // riallinea smoothing allo stato attuale della camera
+    this._posSmooth.copy(this.camera.position);
+    this._beamQuatSmooth.copy(this.camera.quaternion);
+    this._fwdSmooth.set(0,0,-1).applyQuaternion(this._beamQuatSmooth).normalize();
+
+    if (this.cone) this.cone.visible = false;
+  }
+
+
+
+
+
 }
 
 

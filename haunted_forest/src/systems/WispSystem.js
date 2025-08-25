@@ -394,4 +394,22 @@ export class WispSystem {
     this._attrColor.needsUpdate  = true;
     this._attrAlpha.needsUpdate  = true;
   }
+
+  clear(){
+    for (let i=0;i<this.max;i++) this._alive[i] = false;
+    this.geometry.instanceCount = 0;
+    // invalida attributi (non strettamente necessario, ma sicuro)
+    this._attrOffset.needsUpdate = true;
+    this._attrSize.needsUpdate   = true;
+    this._attrAngle.needsUpdate  = true;
+    this._attrColor.needsUpdate  = true;
+    this._attrAlpha.needsUpdate  = true;
+  }
+
+  reset(){
+    this.clear();
+    // reimposta anche tempo interno se vuoi
+    this._time = 0;
+  }
+
 }

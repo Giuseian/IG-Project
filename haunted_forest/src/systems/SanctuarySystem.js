@@ -2,6 +2,18 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 import { FBXLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/FBXLoader.js';
 
+
+// Clona i materiali per ogni mesh (evita sharing tra cloni)
+function cloneMaterialsPerMesh(root){
+  root.traverse(o=>{
+    if (!o.isMesh || !o.material) return;
+    const src = o.material;
+    o.material = Array.isArray(src) ? src.map(m=>m.clone()) : src.clone();
+    o.material.needsUpdate = true;
+  });
+}
+
+
 // Scala a un'altezza target e appoggia la base a y=0
 function fitObjectToHeight(obj, targetH = 0.9) {
   obj.updateMatrixWorld(true);
@@ -102,8 +114,19 @@ export class SanctuarySystem {
       this.scene.add(root);
 
       const model = this._fbx.clone(true);
+      // <<< fondamentale: materiali per istanza
+      cloneMaterialsPerMesh(model);
       const finalH = fitObjectToHeight(model, def.targetHeight ?? this.targetHeight);
       root.add(model);
+
+
+      // --- collider per camera (raggio/altezza dal bbox del SOLO modello)
+      const bbox = new THREE.Box3().setFromObject(model);
+      const size = new THREE.Vector3(); bbox.getSize(size);
+      const radiusXZ = 0.5 * Math.max(size.x, size.z);
+      const colliderRadius = Math.max(12, radiusXZ * 0.65);  // un po’ di margine
+      const colliderHeight = Math.max(30, size.y);           // fallback minimo
+
 
       // ring
       const rOuter = (def.radius != null) ? def.radius : 100;
@@ -173,7 +196,13 @@ export class SanctuarySystem {
         state: 'idle',
         _spawnTick: 0,
         lastPurifyT: -1,
-        aimStickUntil: 0
+        aimStickUntil: 0, 
+        // collider statico per la camera
+        collider: {
+          pos: new THREE.Vector3(def.x, 0, def.z),
+          radius: colliderRadius,
+          height: colliderHeight
+        }
       });
     }
   }
@@ -269,8 +298,15 @@ export class SanctuarySystem {
       if (t >= 1 && s.state !== 'done') {
         s.state = 'done';
         this._applyVisual(s, 1, 'done');
-        if (++this._doneCount && this.onPurified) this.onPurified(i, this._doneCount, this._sanct.length);
+        this._doneCount++;
+        if (this.onPurified) this.onPurified(i, this._doneCount, this._sanct.length);
+
+        // <<< NEW: se sono tutti fatti, colora tutti (celebration)
+        if (this._doneCount === this._sanct.length) {
+          this._celebrateAll();
+        }
       }
+
     }
 
     // ---- TINT arma & SAFE ZONE
@@ -330,6 +366,7 @@ export class SanctuarySystem {
         beaconMat.opacity = 0.06;
 
         this._setModelEmissive(s.model, new THREE.Color(0x000000), 0.0);
+        s.light.color.copy(this._colIdle);
         s.light.intensity = 0.0;
       } break;
 
@@ -343,6 +380,7 @@ export class SanctuarySystem {
         beaconMat.opacity = 0.10;
 
         this._setModelEmissive(s.model, this._colArmed, 0.25);
+        s.light.color.copy(this._colArmed);
         s.light.intensity = 0.4;
       } break;
 
@@ -359,6 +397,7 @@ export class SanctuarySystem {
         beaconMat.opacity = 0.10 + 0.32 * t;
 
         this._setModelEmissive(s.model, c, 0.5 + 1.2 * t);
+        s.light.color.copy(c);
         s.light.intensity = 1.0 + 1.4 * t;
       } break;
 
@@ -373,6 +412,7 @@ export class SanctuarySystem {
         beaconMat.opacity = 0.50;
 
         this._setModelEmissive(s.model, this._colDone, 1.9);
+        s.light.color.copy(this._colDone);
         s.light.intensity = 1.9;
       } break;
     }
@@ -455,6 +495,20 @@ export class SanctuarySystem {
 
   /** Quanti totem stanno attualmente canalizzando */
   getPurifyingCount(){ return this._purifyingCount | 0; }
+
+  _celebrateAll(){
+    for (const s of this._sanct){
+      s.state = 'done';
+      this._applyVisual(s, 1, 'done');
+    }
+  }
+
+  getOccluders(){
+    // array di { pos:THREE.Vector3, radius:Number, height:Number }
+    return this._sanct.map(s => s.collider).filter(Boolean);
+  }
+
+
 
   /** Reset totale (per Retry/Replay) */
   resetAll(){

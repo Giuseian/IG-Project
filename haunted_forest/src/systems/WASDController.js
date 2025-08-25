@@ -63,6 +63,30 @@ export class WASDController {
 
   setEnabled(v){ this.enabled = !!v; }
 
+  clearInput(){
+    this.keys.clear();
+  }
+
+  /**
+   * Rimette camera/controlli a uno stato noto.
+   * x,z richiesti; y se omesso -> ground(x,z)+eyeHeight
+   */
+  resetPose({ x=0, z=0, y=null, yaw=0, pitch=0, zeroVel=true } = {}){
+    if (zeroVel) this.vel.set(0,0,0);
+
+    this.yaw   = yaw;
+    this.pitch = THREE.MathUtils.clamp(pitch, this.params.pitchMin, this.params.pitchMax);
+
+    const gy = this.getGroundY(x, z);
+    const newY = (y == null) ? (gy + this.eyeHeight) : y;
+
+    this.pos.set(x, newY, z);
+    this.camera.position.copy(this.pos);
+    this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
+
+    this.clearInput();
+  }
+
   /** Da chiamare sul mousemove quando il pointer lock è attivo. */
   onMouseDelta(dx, dy){
     if (!this.enabled) return;
