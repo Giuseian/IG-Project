@@ -43,6 +43,7 @@ export function initHUD() {
       .hearts .h.off{ opacity:0; transform: scale(.8); pointer-events:none; }
       /* Keycaps: stato attivo (per F3) */
       .keycap.on{box-shadow: 0 0 12px #22e3ff80, inset 0 0 0 2px #22e3ff55; }
+      .hud-dim{ opacity:.45; filter: grayscale(.2) saturate(.85); transition: opacity .18s ease, filter .18s ease; }
     `;
 
     /* ===== PIXEL RETRO ===== */
@@ -381,6 +382,10 @@ export function initHUD() {
 
     // SAFE badge (resta com'era)
     els.sanctSafe?.classList.toggle('hud-hide', !(info?.safe));
+
+    // dim/bright del pannello sanctuary
+    leftSanct.classList.toggle('hud-dim', !!info?.uiDim);
+
   }
 
   function setDebug() {}

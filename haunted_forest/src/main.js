@@ -174,6 +174,10 @@ let wisps;
 // griglia collisione camera-tronchi
 let _occGrid = null;
 
+// Sanctuary
+let _hudShowDoneUntil = 0;
+
+
 // input schema: RMB = AIM, F = power toggle
 let _aimHeld = false;
 let _fireToggle = false;
@@ -818,6 +822,9 @@ async function init(){
       }
       if (scene.fog) scene.fog.density *= 1.07;
 
+      // <<< NEW: mostra "done" forte per ~2.5s
+      _hudShowDoneUntil = performance.now() * 0.001 + 2.5;
+
       if (totalDone === totalCount) showWinOverlay();
     }
   });
@@ -991,8 +998,38 @@ function animate(){
   );
 
   // HUD Sanctuary
-  const info = sanctuaries?.getNearestInfo(camera.position) || null;
-  if (hud.setSanctuary) hud.setSanctuary(info);
+  // HUD Sanctuary (contestuale, effimero su "done", poi dim e preferisci incompleto)
+  let hudInfo = sanctuaries?.getNearestInfo(camera.position) || null;
+  if (hudInfo) {
+    const near = hudInfo.dist <= (hudInfo.radius + sanctuaries.entryPad);
+    let uiDim = !(near && (hudInfo.state === 'armed' || hudInfo.state === 'purifying'));
+
+    // se il più vicino è "done": mostra per 2.5s, poi sposta il focus su un incompleto (se c'è)
+    if (hudInfo.state === 'done') {
+      if (tNow <= _hudShowDoneUntil) {
+        uiDim = false; // celebra a piena intensità
+      } else {
+        const inc = sanctuaries.getNearestIncomplete?.(camera.position);
+        if (inc) {
+          hudInfo = inc;
+          const near2 = inc.dist <= (inc.radius + sanctuaries.entryPad);
+          uiDim = !(near2 && (inc.state === 'armed' || inc.state === 'purifying'));
+        } else {
+          uiDim = true; // tutto done → pannello dim
+        }
+      }
+    }
+
+    // passiamo anche "safe" (opzionale) per il badge SAFE
+    hudInfo = {
+      ...hudInfo,
+      uiDim,
+      safe: sanctuaries.isInsideProtectedRing?.(camera.position) || false
+    };
+  }
+
+  if (hud.setSanctuary) hud.setSanctuary(hudInfo);
+
 
   // Off-screen indicators (ghosts)
   if (hud.setIndicators) {
