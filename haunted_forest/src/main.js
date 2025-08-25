@@ -1,4 +1,4 @@
-// // // // // // main.js — Pines + FBM Fog (safe) + HUD + Ghost SPAWNER + WASD (FPS) + BeamSystem (GIMBAL) + SANCTUARIES
+// // // // // // main.js — Pines + FBM Fog + HUD + Spawner + WASD + Beam + Sanctuaries + DPS + Overlays
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
@@ -24,7 +24,7 @@ const PINE_OPTIONS = { mtlUrl:'/assets/models/trees/pine.mtl', keepSourceMaps:fa
 /* Collezione degli shader patchati per aggiornare fogTime */
 const _fogShaders = new Set();
 
-/* ---------------- Fog FBM (SAFE: niente worldPosition) ---------------- */
+/* ---------------- Fog FBM (SAFE) ---------------- */
 const NOISE_GLSL = `
 vec3 mod289(vec3 x){return x - floor(x*(1.0/289.0))*289.0;}
 vec4 mod289(vec4 x){return x - floor(x*(1.0/289.0))*289.0;}
@@ -119,33 +119,43 @@ function attachFogTo(root){
 
 
 /* ---------------- App & Game State ---------------- */
-let scene, camera, renderer; // <- niente controls
+let scene, camera, renderer;
 let animateFog = true;
 let debugEl;
 
+const INIT_FOG_DENSITY = 1.6e-4;
+
 const player = { health:1.0, heat:0.0, score:0, beamOn:false, overheated:false };
+let _scoreFloat = 0; // accumulatore in float, HUD mostra floor
 
 let hud;
-let beam;      // spotlight scenico (usato come “cono” visivo)
+let beam;
 let beamSystem;
 
 // Systems
 let forest;
 let spawner;
 let playerCtl;
-let sanctuaries; // <===== NEW
+let sanctuaries;
 
-// griglia collisione camera-tronchi (la costruiremo una volta e la riuseremo)
+// griglia collisione camera-tronchi
 let _occGrid = null;
 
-// input schema (gimbal): RMB = AIM, F = power toggle
+// input schema: RMB = AIM, F = power toggle
 let _aimHeld = false;
 let _fireToggle = false;
 
 // reticolo
 let _reticleEl = null;
 
+// game freeze (GO/Win)
+let _frozen = false;
+
 let _tPrev = performance.now() * 0.001;
+
+// === Combat tuning ===
+const ATTACK_RADIUS = 3.2;   // m (XZ)
+const DPS_PER_GHOST = 0.12;  // health(0..1)/sec (12 HP/s)
 
 init();
 animate();
@@ -210,7 +220,7 @@ function minDistToOccluders(x, z, occGrid){
   return Math.sqrt(minD2);
 }
 
-/* ---- Spots per i santuari: PRNG seeded + bande near/mid/far + clearance tronchi ---- */
+/* ---- Spots per i santuari ---- */
 function makeSanctuarySpots(count, opt = {}) {
   const {
     bands = [[1200,1500], [2000,2600], [3000,3800]],
@@ -277,12 +287,89 @@ function makeSanctuarySpots(count, opt = {}) {
   return spots;
 }
 
+/* ----------------- OVERLAYS (GO/Win) ----------------- */
+function ensureOverlayCSS(){
+  if (document.getElementById('overlay-style')) return;
+  const s = document.createElement('style');
+  s.id='overlay-style';
+  s.textContent = `
+    .overlay {
+      position:fixed; inset:0; z-index:10001; display:flex; align-items:center; justify-content:center;
+      background: rgba(6,12,18,.6); backdrop-filter: blur(6px);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+      color:#e8f1ff;
+    }
+    .overlay-card {
+      background:#0f172aee; border-radius:16px; box-shadow:0 20px 50px #000c, inset 0 1px 0 #fff1;
+      padding:28px 32px; min-width:320px; text-align:center;
+    }
+    .overlay-card h1{ margin:0 0 8px; font-size:28px; }
+    .overlay-card p{ margin:0 0 16px; color:#a8b4c4; }
+    .overlay-card .btns{ display:flex; gap:10px; justify-content:center; }
+    .overlay-card button{
+      padding:10px 16px; border:0; border-radius:12px; cursor:pointer; font-weight:700; letter-spacing:.2px;
+      background:#18c08f; color:#06281f; box-shadow:0 4px 12px #0006;
+    }
+    .overlay-card button.secondary{ background:#334155; color:#cbd5e1; }
+  `;
+  document.head.appendChild(s);
+}
+
+let _overlayEl = null;
+function hideOverlay(){
+  if (_overlayEl && _overlayEl.parentNode) _overlayEl.parentNode.removeChild(_overlayEl);
+  _overlayEl = null;
+}
+function showOverlay({ title, text, primary, secondary }){
+  ensureOverlayCSS();
+  hideOverlay();
+  if (document.pointerLockElement) document.exitPointerLock?.();
+  const root = document.createElement('div');
+  root.className = 'overlay';
+  root.innerHTML = `
+    <div class="overlay-card">
+      <h1>${title}</h1>
+      <p>${text}</p>
+      <div class="btns">
+        <button id="ovl-primary">${primary?.label ?? 'OK'}</button>
+        ${secondary ? `<button id="ovl-secondary" class="secondary">${secondary.label}</button>` : ''}
+      </div>
+    </div>
+  `;
+  document.body.appendChild(root);
+  _overlayEl = root;
+  const p = root.querySelector('#ovl-primary');
+  const s = root.querySelector('#ovl-secondary');
+  if (p && primary?.onClick) p.onclick = primary.onClick;
+  if (s && secondary?.onClick) s.onclick = secondary.onClick;
+}
+
+function showGameOverOverlay(){
+  _frozen = true;
+  showOverlay({
+    title: 'You Fell',
+    text:  'The ghosts overwhelmed you.',
+    primary:  { label:'Retry',  onClick: ()=>{ resetGame(); } },
+    secondary:{ label:'Close', onClick: ()=>{ hideOverlay(); } }
+  });
+}
+function showWinOverlay(){
+  _frozen = true;
+  showOverlay({
+    title: 'All Totems Purified!',
+    text:  'The forest grows quiet. Play again?',
+    primary:  { label:'Replay', onClick: ()=>{ resetGame(); } },
+    secondary:{ label:'Close', onClick: ()=>{ hideOverlay(); } }
+  });
+}
+// esponi per callback già esistente
+window.showWinOverlay = showWinOverlay;
+
+/* ---------------- init ---------------- */
 async function init(){
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x87a0c0);
-
-  // Fog (regolabile con [ e ])
-  scene.fog = new THREE.FogExp2(0xDFE9F3, 1.6e-4);
+  scene.fog = new THREE.FogExp2(0xDFE9F3, INIT_FOG_DENSITY);
 
   camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 20000);
   camera.position.set(0, 20, 120);
@@ -326,8 +413,7 @@ async function init(){
   document.body.appendChild(_reticleEl);
 
   // Spotlight (solo estetica)
-  const DEFAULT_BEAM_COLOR = 0xcff2ff; // colore arma fuori dai ring
-  // CHANGED: intensità > 0 così la tinta si vede anche quando non stai "sparando"
+  const DEFAULT_BEAM_COLOR = 0xcff2ff;
   beam = new THREE.SpotLight(DEFAULT_BEAM_COLOR, 1.2, 60, THREE.MathUtils.degToRad(12), 0.35, 1.0);
   beam.visible = false;
   camera.add(beam);
@@ -371,16 +457,14 @@ async function init(){
     if (code === 'KeyE') { playerCtl?.addYaw(-Math.PI/4); e.preventDefault(); }
   });
 
-  // Nebbia → materiali già presenti
+  // Nebbia → materiali
   attachFogTo(scene);
 
-  // --- forest + misura altezza tipica pino
+  // --- forest + altezza tipica pino
   const env = await setupForest(scene);
-
-  // Nebbia → materiali del forest
   attachFogTo(scene);
 
-  // ---------- WASD Controller (FPS) ----------
+  // ---------- WASD Controller ----------
   const getGroundY = (x, z) => 0.0;
   playerCtl = new WASDController({
     camera,
@@ -446,6 +530,9 @@ async function init(){
     protectSeconds: 1.0
   });
 
+  // punteggio per ghost purificato
+  spawner.onGhostCleansed = () => { _scoreFloat += 25; };
+
   await spawner.init();
   if (spawner.pauseAggro) spawner.pauseAggro(false);
 
@@ -463,31 +550,15 @@ async function init(){
     sensY: 0.0016,
     recenterTau: 0.22
   });
-
   window.beamSystem = beamSystem;
 
-  // (OPZIONALE) Ostacoli per LOS
-  const USE_OCCLUSION = false;
-  if (USE_OCCLUSION) {
-    const occluderMeshes = [];
-    const cylGeo = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true);
-    const matOcc = new THREE.MeshBasicMaterial({ visible: false });
-    for (const c of forest.occluders) {
-      const m = new THREE.Mesh(cylGeo, matOcc);
-      m.position.set(c.pos.x, c.height * 0.5, c.pos.z);
-      m.scale.set(c.radius, c.height, c.radius);
-      m.updateMatrixWorld();
-      occluderMeshes.push(m);
-      scene.add(m);
-    }
-    beamSystem.setObstacles(occluderMeshes);
-  }
+  // Nebbia su forest già ok
 
   // ====== GRID per collisione camera & generazione totem ======
   _occGrid = buildOccluderGrid(forest.occluders, 120);
 
-  // ===== SANCTUARIES (bande: vicino, medio, lontano + seed + clearance) =====
-  const TOTEM_COUNT = 3; // uno per banda
+  // ===== SANCTUARIES =====
+  const TOTEM_COUNT = 3;
   const items = makeSanctuarySpots(TOTEM_COUNT, {
     bands: [[1200,1500], [2000,2600], [3000,3800]],
     seed: 1337,
@@ -509,15 +580,13 @@ async function init(){
     spawner,
     modelUrl: '/assets/models/totem/new_totem.fbx',
     items,
-    // PUNIZIONE LIEVE: decay basso, tolleranze alte
     decayRate: 0.12,
     entryPad: 10.0,
     purifyGrace: 0.9,
     aimStick: 0.35,
 
-    // Tinta dinamica arma (+ reticolo)
     onBeamTint: (hexOrNull)=>{
-      const target = (hexOrNull != null) ? hexOrNull : DEFAULT_BEAM_COLOR;
+      const target = (hexOrNull != null) ? hexOrNull : 0xcff2ff;
       if (beam) beam.color.setHex(target);
       if (_reticleEl){
         const hexStr = '#'+ (target >>> 0).toString(16).padStart(6,'0');
@@ -527,13 +596,17 @@ async function init(){
     },
 
     onPurified: (idx, totalDone, totalCount)=>{
-      player.score += 100;
+      // punteggio + cura + leggera variazione difficoltà
+      _scoreFloat += 150;
+      player.health = Math.min(1.0, player.health + 0.25);
+
       if (spawner?.params) {
         spawner.params.maxAlive += 1;
         spawner.params.spawnInterval *= 0.9;
       }
       if (scene.fog) scene.fog.density *= 1.07;
-      if (typeof showWinOverlay === 'function' && totalDone === totalCount) showWinOverlay();
+
+      if (totalDone === totalCount) showWinOverlay();
     }
   });
 
@@ -589,14 +662,19 @@ function animate(){
   const dt   = Math.min(0.05, Math.max(0, tNow - _tPrev));
   _tPrev = tNow;
 
+  // fog time sempre attivo
+  _fogShaders.forEach(s => { s.uniforms.fogTime.value = animateFog ? tNow : 0.0; });
+
+  if (_frozen) {
+    renderer.render(scene, camera);
+    return;
+  }
+
   // input/camera
   playerCtl?.update(dt);
 
   // soft collision camera–alberi
   resolveCameraCollision(camera.position, _occGrid, { camRadius: 8, maxIter: 2 });
-
-  // fog time
-  _fogShaders.forEach(s => { s.uniforms.fogTime.value = animateFog ? tNow : 0.0; });
 
   // stato BEAM: attivo se power ON e non overheated
   const activeBeam = _fireToggle && !player.overheated;
@@ -604,16 +682,12 @@ function animate(){
   // 1) ghost update
   spawner?.update(dt);
 
-  // 2) beam update (orientamento/heat/exposure)
+  // 2) beam update
   if (beamSystem) {
     beamSystem.setFiring(activeBeam);
     beamSystem.update(dt, spawner?.active || []);
-
-    // sync HUD heat/overheat
     player.heat       = beamSystem.heat;
     player.overheated = beamSystem.overheated;
-
-    // Sync angolo spotlight con halfAngle del sistema (puramente estetico)
     if (beam) beam.angle = THREE.MathUtils.degToRad(Math.max(1, beamSystem.halfAngleDeg));
   }
 
@@ -624,7 +698,7 @@ function animate(){
     playerPos: camera.position
   });
 
-  // === DEFENSE HOTSPOT: più ghost quando ti avvicini a un totem non-done ===
+  // === DEFENSE HOTSPOT ===
   if (sanctuaries && spawner?.setDefenseHotspot) {
     const ctxS = sanctuaries.getNearestIncomplete?.(camera.position);
     if (ctxS) {
@@ -648,23 +722,33 @@ function animate(){
     }
   }
 
-  // === Recupera info del santuario più vicino (serve per HUD + luce) ===
-  const info = sanctuaries?.getNearestInfo(camera.position) || null;
-
-  // Spotlight visivo: ON anche in ARMED/PURIFYING con intensità diversa (OFF se overheated)
-  if (beam) {
-    let vis = activeBeam;
-    let inten = activeBeam ? 1.25 : 0.0;
-    if (info) {
-      if (info.state === 'armed')     { vis = true; inten = Math.max(inten, 0.7); }
-      if (info.state === 'purifying') { vis = true; inten = Math.max(inten, 1.2); }
+  // === COMBAT: DPS se NON protetto ===
+  const safe = sanctuaries?.isInsideProtectedRing?.(camera.position) || false;
+  if (!safe) {
+    let attackers = 0;
+    for (const g of spawner?.active || []) {
+      if (g.state !== 'active') continue;
+      const dx = g.root.position.x - camera.position.x;
+      const dz = g.root.position.z - camera.position.z;
+      const d = Math.hypot(dx, dz);
+      if (d <= ATTACK_RADIUS) attackers++;
     }
-    beam.visible   = vis && !player.overheated;
-    beam.intensity = beam.visible ? inten : 0.0;
+    if (attackers > 0) {
+      const dmg = attackers * DPS_PER_GHOST * dt;
+      player.health = Math.max(0, player.health - dmg);
+      if (player.health <= 0) {
+        showGameOverOverlay();
+      }
+    }
   }
+
+  // === SCORE TICK: +2/sec mentre canalizzi ===
+  const purifyingCount = sanctuaries?.getPurifyingCount?.() || 0;
+  if (purifyingCount > 0) _scoreFloat += 2 * dt;
 
   // HUD base
   player.beamOn = _fireToggle;
+  player.score = Math.floor(_scoreFloat);
   hud.set(
     player.health,
     player.heat,
@@ -672,12 +756,11 @@ function animate(){
     { overheated: player.overheated, beamOn: activeBeam }
   );
 
-  // HUD Sanctuary: stato + progresso del più vicino
-  if (hud.setSanctuary) {
-    hud.setSanctuary(info);
-  }
+  // HUD Sanctuary
+  const info = sanctuaries?.getNearestInfo(camera.position) || null;
+  if (hud.setSanctuary) hud.setSanctuary(info);
 
-  // Off-screen indicators (spenti quando l'aggro è in pausa: es. purifying)
+  // Off-screen indicators
   if (hud.setIndicators) {
     const show = !(spawner?.isAggroPaused?.());
     hud.setIndicators( show ? buildOffscreenIndicators(camera, spawner, { max: 4, marginPx: 28 }) : [] );
@@ -688,7 +771,6 @@ function animate(){
   const thr = (g && g._getThreshold) ? g._getThreshold() : (g?.uniformSets?.[0]?.uThreshold?.value ?? 1.0);
   const dist = g ? Math.hypot(g.root.position.x - camera.position.x, g.root.position.z - camera.position.z) : 0;
   const spStats = spawner?.debugInfo?.() || null;
-
   const focus = window.beamSystem?.getFocusInfo?.();
   const exposureForHUD = focus ? focus.exposure : (g?.exposure || 0);
 
@@ -702,7 +784,7 @@ function animate(){
     });
   }
 
-  // aggiorna reticolo se in AIM
+  // reticolo
   updateReticle();
 
   renderer.render(scene, camera);
@@ -753,10 +835,10 @@ function setupDebug(beamTargetObj){
   renderer.render = (a,b)=>{ updateBeamTarget(); _origRender(a,b); };
 }
 
-/* --------- Reticolo (proiezione 2D del puntamento del beam) --------- */
+/* --------- Reticolo --------- */
 function updateReticle(){
   if (!_reticleEl || !window.beamSystem) return;
-  if (!window.beamSystem.aiming) {
+  if (!window.beamSystem.aiming || _frozen) {
     _reticleEl.style.left = '-9999px';
     _reticleEl.style.top  = '-9999px';
     return;
@@ -795,17 +877,14 @@ function buildOffscreenIndicators(camera, spawner, { max = 4, marginPx = 28 } = 
     const dist = v.length();
     if (!isFinite(dist) || dist < 1e-3) continue;
 
-    // NDC
     const p = gp.clone().project(camera);
     const behind = v.dot(fwd) < 0;
     let nx = p.x, ny = p.y;
     if (behind){ nx = -nx; ny = -ny; }
 
-    // on-screen (davanti) → non mostrare
     const onScreen = !behind && nx >= -1 && nx <= 1 && ny >= -1 && ny <= 1;
     if (onScreen) continue;
 
-    // clamp ai bordi con margine
     const mx = (marginPx / w) * 2;
     const my = (marginPx / h) * 2;
     nx = clamp(nx, -1 + mx, 1 - mx);
@@ -814,10 +893,7 @@ function buildOffscreenIndicators(camera, spawner, { max = 4, marginPx = 28 } = 
     const sx = (nx * 0.5 + 0.5) * w;
     const sy = (-ny * 0.5 + 0.5) * h;
 
-    // direzione (dal centro al punto clampato)
-    const ang = Math.atan2(ny, nx); // rad
-
-    // severità + alpha/scale con distanza
+    const ang = Math.atan2(ny, nx);
     let severity = 'info';
     if (dist < 80) severity = 'danger';
     else if (dist < 160) severity = 'warn';
@@ -825,7 +901,6 @@ function buildOffscreenIndicators(camera, spawner, { max = 4, marginPx = 28 } = 
     const alpha = clamp(1.0 - dist / 500, 0.35, 1.0) * (behind ? 1.0 : 0.95);
     const scale = clamp(1.2 - dist / 600, 0.75, 1.15);
 
-    // threat score: vicino + dietro = più alto; active > appearing
     const stateMul = (g.state === 'active') ? 1.0 : 0.8;
     const threat = stateMul * (behind ? 1.3 : 1.0) * (1 / (dist + 20));
 
@@ -896,8 +971,59 @@ function updateDebug(spStats = {}){
     `Exposure: ${renderer.toneMappingExposure.toFixed(2)}  |  ` +
     `shaders:${_fogShaders.size}  |  anim:${animateFog?'ON':'OFF'}${spLine}${beamInfo}\n` +
     `Heat: ${player.overheated?'<span style="color:#ff6b6b">'+heatPct+'%</span>':heatPct+'%'}  ` +
-    `| Beam: ${beamState}  (Pointer Lock: click canvas, ESC per uscire | RMB: AIM | F: power | P:spawn, V:antiPopIn, C:cleanse all, X:nearest, ,/. angle, 9/0 range, Q/E snap, Shift+Q 180°)`;
+    `| Beam: ${beamState}  (Pointer Lock: click canvas, ESC | RMB: AIM | F: power | P:spawn, V:antiPopIn, C:cleanse all, X:nearest, ,/. angle, 9/0 range, Q/E snap, Shift+Q 180°)`;
 }
+
+/* --------- Reset (Retry/Replay) --------- */
+function resetGame(){
+  hideOverlay();
+  _frozen = false;
+
+  // reset player/state
+  player.health = 1.0;
+  player.heat = 0.0;
+  player.overheated = false;
+  _scoreFloat = 0;
+  player.score = 0;
+  _fireToggle = false;
+  _aimHeld = false;
+
+  // reset systems
+  spawner?.reset?.();
+  sanctuaries?.resetAll?.();
+
+  // reset fog & camera
+  if (scene?.fog) scene.fog.density = INIT_FOG_DENSITY;
+  camera.position.set(0,20,120);
+
+  // pulizia UI
+  if (hud?.setIndicators) hud.setIndicators([]);
+
+  // pointer lock lo richiedi cliccando sul canvas
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

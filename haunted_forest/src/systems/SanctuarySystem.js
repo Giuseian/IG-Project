@@ -44,11 +44,11 @@ export class SanctuarySystem {
 
     // Tinta dinamica dell’arma
     this.onBeamTint   = typeof opts.onBeamTint === 'function' ? opts.onBeamTint : null;
-    this._lastBeamHex = null; // cache per evitare chiamate ripetute
+    this._lastBeamHex = null;
 
     // Anti-flicker
-    this.purifyGrace = opts.purifyGrace ?? 0.6; // s: resti purifying un attimo se cala il beam
-    this.aimStick    = opts.aimStick    ?? 0.2; // s: tolleranza micro-jitter mira
+    this.purifyGrace = opts.purifyGrace ?? 0.6;
+    this.aimStick    = opts.aimStick    ?? 0.2;
 
     this._ray        = new THREE.Raycaster();
     this._tmpV       = new THREE.Vector3();
@@ -62,13 +62,13 @@ export class SanctuarySystem {
     this._time       = 0;
 
     // palette
-    this._colIdle    = new THREE.Color(0x64a6ff); // blu (solo ring idle)
+    this._colIdle    = new THREE.Color(0x64a6ff); // blu (idle)
     this._colArmed   = new THREE.Color(0xff6b6b); // rosso (armed)
     this._colYellow  = new THREE.Color(0xffe066); // giallo
     this._colDone    = new THREE.Color(0x39ff95); // verde (done)
 
-    this._purifyingCount = 0; // contatore "purifying" (retro compat)
-    this._safeCount      = 0; // NEW: armed o purifying
+    this._purifyingCount = 0;
+    this._safeCount      = 0;
   }
 
   async init(){
@@ -101,12 +101,11 @@ export class SanctuarySystem {
       root.position.set(def.x, 0, def.z);
       this.scene.add(root);
 
-      // modello totem
       const model = this._fbx.clone(true);
       const finalH = fitObjectToHeight(model, def.targetHeight ?? this.targetHeight);
       root.add(model);
 
-      // ring a terra (fog OFF per visibilità)
+      // ring
       const rOuter = (def.radius != null) ? def.radius : 100;
       const rInner = Math.max(0.6 * rOuter, rOuter - 8.0);
       const ringGeo = new THREE.RingGeometry(rInner, rOuter, 64);
@@ -120,7 +119,6 @@ export class SanctuarySystem {
       ring.position.y = 0.02;
       root.add(ring);
 
-      // outline interno
       const outlineGeo = new THREE.RingGeometry(rInner * 0.92, rInner * 0.98, 64);
       outlineGeo.rotateX(-Math.PI/2);
       const outlineMat = new THREE.MeshBasicMaterial({
@@ -131,7 +129,6 @@ export class SanctuarySystem {
       ringOutline.position.y = 0.018;
       root.add(ringOutline);
 
-      // glow esterno additivo
       const glowGeo = new THREE.RingGeometry(rOuter * 1.00, rOuter * 1.05, 64);
       glowGeo.rotateX(-Math.PI/2);
       const glowMat = new THREE.MeshBasicMaterial({
@@ -144,7 +141,6 @@ export class SanctuarySystem {
       ringGlow.position.y = 0.021;
       root.add(ringGlow);
 
-      // beacon: colonna additiva
       const hBeacon = Math.max(6, finalH * 2.8);
       const rBottom = Math.max(0.6, rOuter * 0.12);
       const rTop    = Math.max(0.3, rOuter * 0.04);
@@ -163,7 +159,6 @@ export class SanctuarySystem {
       beacon.position.y = finalH + hBeacon * 0.5 - beaconInset;
       root.add(beacon);
 
-      // luce puntiforme
       const light = new THREE.PointLight(0x66ffcc, 0.0, rOuter * 6, 2.0);
       light.position.set(0, Math.max(1.0, finalH * 1.2), 0);
       root.add(light);
@@ -171,13 +166,12 @@ export class SanctuarySystem {
       this._sanct.push({
         def, root, model, ring, ringOutline, ringGlow, beacon, light,
         modelHeight: finalH,
-        aimYOffset: finalH * 0.85, // mira verso la testa
+        aimYOffset: finalH * 0.85,
         charge: 0,
         holdSeconds: def.holdSeconds ?? 3.0,
         radius: rOuter,
         state: 'idle',
         _spawnTick: 0,
-        // anti-flicker state
         lastPurifyT: -1,
         aimStickUntil: 0
       });
@@ -217,14 +211,13 @@ export class SanctuarySystem {
     const beamOn     = !!ctx.beamOn;
 
     let purifyingNow = 0;
-    let safeNow      = 0; // NEW: inside ring (armed o purifying)
+    let safeNow      = 0;
 
     for (let i=0; i<this._sanct.length; i++){
       const s = this._sanct[i];
 
       if (s.state === 'done') { this._applyVisual(s, 1.0, 'done'); continue; }
 
-      // 1) dentro il cerchio (con padding)
       const dx = ctx.playerPos.x - s.root.position.x;
       const dz = ctx.playerPos.z - s.root.position.z;
       const rad = s.radius + this.entryPad;
@@ -262,12 +255,12 @@ export class SanctuarySystem {
         s._spawnTick += dt;
         s.lastPurifyT = this._time;
         purifyingNow++;
-        safeNow++; // purifying => safe
+        safeNow++;
       } else {
         s.state  = inCircle ? 'armed' : 'idle';
         if (!stillInGrace) s.charge = Math.max(0, s.charge - this.decayRate * dt);
         s._spawnTick = 0;
-        if (s.state === 'armed') safeNow++; // armed => safe
+        if (s.state === 'armed') safeNow++;
       }
 
       const t = THREE.MathUtils.clamp(s.charge / s.holdSeconds, 0, 1);
@@ -280,7 +273,7 @@ export class SanctuarySystem {
       }
     }
 
-    // ---- TINT arma & SAFE ZONE (centro/raggio del ring in cui sei) ----
+    // ---- TINT arma & SAFE ZONE
     let tintHex = null;
     let safeCenter = null;
     let safeRadius = 0;
@@ -298,8 +291,6 @@ export class SanctuarySystem {
       if (best){
         const t = THREE.MathUtils.clamp(best.charge / best.holdSeconds, 0, 1);
         tintHex = this._beamHexForState(best.state, t);
-
-        // SAFE ZONE info
         safeCenter = best.root.position;
         safeRadius = best.radius + this.entryPad;
       }
@@ -310,16 +301,13 @@ export class SanctuarySystem {
       this.onBeamTint(tintHex);
     }
 
-    // --- Aggiorna flag safe (armed o purifying) e informa lo spawner con centro/raggio ---
-    const prevSafe = this._safeCount;
     this._safeCount = safeNow;
-
-    // Mantieni anche il contatore purify per compatibilità eventuale
     this._purifyingCount = purifyingNow;
 
     if (this.spawner?.pauseAggro) {
       if (this._safeCount > 0) {
-        this.spawner.pauseAggro(true, safeCenter, safeRadius);
+        // opzionale: potresti passare anche i parametri della safe zone
+        this.spawner.pauseAggro(true);
       } else {
         this.spawner.pauseAggro(false);
       }
@@ -419,7 +407,7 @@ export class SanctuarySystem {
     return { state: best.state, t, dist: bestD, radius: best.radius };
   }
 
-    /** Trova il totem NON-done più vicino con posizione */
+  /** Trova il totem NON-done più vicino con posizione */
   getNearestIncomplete(playerPos){
     let best=null, bestD=Infinity;
     for (const s of this._sanct){
@@ -449,7 +437,36 @@ export class SanctuarySystem {
     return (dx*dx + dz*dz) <= rad*rad;
   }
 
-
   /** True se almeno un santuario è in purifying (retro compat) */
   isPurifySafe(){ return this._purifyingCount > 0; }
+
+  /** True se sei dentro a un ring che è armed o purifying (non done) */
+  isInsideProtectedRing(playerPos){
+    for (const s of this._sanct){
+      if (s.state === 'done') continue;
+      const dx = playerPos.x - s.root.position.x;
+      const dz = playerPos.z - s.root.position.z;
+      const rad = s.radius + (this.entryPad ?? 0);
+      const inside = (dx*dx + dz*dz) <= rad*rad;
+      if (inside && (s.state === 'armed' || s.state === 'purifying')) return true;
+    }
+    return false;
+  }
+
+  /** Quanti totem stanno attualmente canalizzando */
+  getPurifyingCount(){ return this._purifyingCount | 0; }
+
+  /** Reset totale (per Retry/Replay) */
+  resetAll(){
+    this._doneCount = 0;
+    this._purifyingCount = 0;
+    this._safeCount = 0;
+    for (const s of this._sanct){
+      s.charge = 0;
+      s.state = 'idle';
+      this._applyVisual(s, 0, 'idle');
+    }
+    this._lastBeamHex = null;
+    if (this.onBeamTint) this.onBeamTint(null);
+  }
 }

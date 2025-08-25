@@ -52,6 +52,24 @@ function buildGhostMaterialsForMesh(mesh, opacityBody) {
   return newMats;
 }
 
+/* ---------- util per l’arco (donut sector) ---------- */
+function makeDonutArc(radius = 2.2, thickness = 0.35, theta = Math.PI * 0.001) {
+  const outerR = Math.max(0.001, radius);
+  const innerR = Math.max(0.001, radius - thickness);
+  const shape = new THREE.Shape();
+  const start = -Math.PI * 0.5; // parte dall’alto, senso orario
+  const end   = start + Math.max(0.0001, Math.min(theta, Math.PI * 2 - 1e-4));
+
+  shape.absarc(0, 0, outerR, start, end, false);
+  const hole = new THREE.Path();
+  hole.absarc(0, 0, innerR, end, start, true);
+  shape.holes.push(hole);
+
+  const geo = new THREE.ShapeGeometry(shape, 48);
+  geo.rotateX(-Math.PI/2); // piatto a terra
+  return geo;
+}
+
 const _wRoot  = new THREE.Vector3();
 const _wModel = new THREE.Vector3();
 const _dir    = new THREE.Vector3();
@@ -143,6 +161,8 @@ export class Ghost {
     this._keepDistanceBase = null;
     this._speedBase = null;
 
+    // ring (diegetic)
+    this._ring = { group:null, base:null, arc:null, lastT:-1, radius:2.2, pulseT:0, pulseMax:0.22 };
     this._time = 0;
     this._debugPins = null;
   }
@@ -164,13 +184,17 @@ export class Ghost {
 
     this._setThreshold(0.98);
     this.setVisible(false);
+
+    // crea ring diegetico
+    this._buildRing();
+
     return this;
   }
 
   addTo(parent) { parent.add(this.root); return this; }
   setPosition(x, y, z) { this.root.position.set(x, y, z); return this; }
   getPosition(out = new THREE.Vector3()) { return out.copy(this.root.position); }
-  setVisible(v) { this.root.visible = !!v; return this; }
+  setVisible(v) { this.root.visible = !!v; if (this._ring.group) this._ring.group.visible = !!v; return this; }
   setIdleParams(partial = {}) { Object.assign(this.idle, partial); return this; }
 
   resetKinematics(){
@@ -187,7 +211,9 @@ export class Ghost {
   deactivate(){ return this._enter('inactive'); }
 
   applyExposure(delta) {
+    const before = this.exposure;
     this.exposure = THREE.MathUtils.clamp(this.exposure + delta, 0, 1);
+    if (this.exposure > before + 1e-4) this._ring.pulseT = this._ring.pulseMax; // flash breve
     if (this.exposure >= 1 && this.state === 'active') { this.cleanse(); return true; }
     return false;
   }
@@ -215,17 +241,11 @@ export class Ghost {
         this._pacifyZone = null;
       }
 
-      // distanza minima dal player (fallback) ~ raggio ring tipico
       const fallbackKeep = 100;
-
-      // imposta keepDistance elevato per evitare avvicinamento al player
       const perimeter = this._pacifyZone ? this._pacifyZone.radius + 6.0 : fallbackKeep;
       this.params.keepDistance = Math.max(this._keepDistanceBase ?? 0, perimeter);
-
-      // rallenta un po'
       this.params.speed = Math.min(this._speedBase, this._speedBase * 0.6);
     } else {
-      // ripristina parametri
       this._pacifyZone = null;
       if (this._keepDistanceBase != null) this.params.keepDistance = this._keepDistanceBase;
       if (this._speedBase != null)        this.params.speed        = this._speedBase;
@@ -260,6 +280,9 @@ export class Ghost {
         this._zeroLocalOffsetsXZ();
       }
     }
+
+    // === Ring diegetico (posizione/vis) ===
+    this._updateRing(dt);
   }
 
   /* =================== internals =================== */
@@ -525,6 +548,69 @@ export class Ghost {
     this.model.position.x = 0; this.model.position.z = 0;
   }
 
+  /* ---------- ring diegetico ---------- */
+  _buildRing(){
+    const r = this._ring.radius;
+    const baseGeo = new THREE.RingGeometry(r * 0.82, r * 1.00, 48);
+    baseGeo.rotateX(-Math.PI/2);
+    const baseMat = new THREE.MeshBasicMaterial({
+      color: 0x99e6ff, transparent: true, opacity: 0.18, depthWrite:false, fog:false,
+      blending: THREE.AdditiveBlending
+    });
+    const base = new THREE.Mesh(baseGeo, baseMat);
+
+    const arcGeo = makeDonutArc(r * 1.00, r * 0.26, 0.0001);
+    const arcMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent:true, opacity: 0.75, depthWrite:false, fog:false,
+      blending: THREE.AdditiveBlending
+    });
+    const arc = new THREE.Mesh(arcGeo, arcMat);
+
+    const g = new THREE.Group();
+    g.add(base); g.add(arc);
+    g.visible = false; // visibilità gestita da exposure/pulse
+    this.root.add(g);
+
+    this._ring.group = g;
+    this._ring.base  = base;
+    this._ring.arc   = arc;
+    this._ring.lastT = -1;
+  }
+
+  _updateRing(dt){
+    const R = this._ring;
+    if (!R.group) return;
+
+    // posizione: sempre al suolo sotto al ghost
+    const gx = this.root.position.x, gz = this.root.position.z;
+    const gy = this.getGroundY(gx, gz);
+    // y locale che porta il gruppo alla quota del terreno
+    R.group.position.set(0, (gy + 0.02) - this.root.position.y, 0);
+
+    // visibilità
+    R.pulseT = Math.max(0, R.pulseT - dt);
+    const show = (this.exposure > 0.05) || (R.pulseT > 0) || (this.state === 'appearing' && this.tState < 0.25);
+    R.group.visible = show && this.root.visible;
+
+    // opacità base con un pizzico di pulse
+    if (R.base) {
+      const k = (R.pulseT > 0) ? (0.18 + 0.25 * (R.pulseT / R.pulseMax)) : 0.18;
+      R.base.material.opacity = k;
+      R.base.material.needsUpdate = true;
+    }
+
+    // arco progresso: ricrea geo solo se cambia in modo apprezzabile
+    const t = THREE.MathUtils.clamp(this.exposure, 0, 1);
+    if (Math.abs(t - R.lastT) > 0.01 && R.arc) {
+      const r = R.radius;
+      const theta = Math.max(0.0001, t * Math.PI * 2);
+      const newGeo = makeDonutArc(r * 1.00, r * 0.26, theta);
+      R.arc.geometry.dispose();
+      R.arc.geometry = newGeo;
+      R.lastT = t;
+    }
+  }
+
   setDebugMode(mode = 0) {
     for (const s of this.uniformSets) {
       if (s?.uDebugMode) s.uDebugMode.value = mode | 0;
@@ -532,4 +618,3 @@ export class Ghost {
     return this;
   }
 }
-

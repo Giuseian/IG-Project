@@ -10,7 +10,10 @@ export class GhostSpawner {
     this.scene       = opts.scene;
     this.camera      = opts.camera;
     this.getGroundY  = opts.getGroundY || (() => 0);
-    this.getFocusPos = opts.getFocusPos || null; // fallback (non usato in guard mode)
+    this.getFocusPos = opts.getFocusPos || null;
+
+    // callbacks
+    this.onGhostCleansed = typeof opts.onGhostCleansed === 'function' ? opts.onGhostCleansed : null;
 
     // Pool / Active
     this.pool   = [];
@@ -85,27 +88,28 @@ export class GhostSpawner {
     // Aggro pause (purifying)
     this._pauseAggro = false;
 
-    // === DEFENSE HOTSPOT (totem) ===
-    this._defense = null;      // { pos, radius, capBoost, spawnIntervalMul }
+    // DEFENSE HOTSPOT
+    this._defense = null;
     this._capBoost = 0;
     this._boostActive = false;
 
-    // === GUARD MODE (parametri) ===
+    // GUARD MODE params
     this.guard = {
-      orbitSpeed: 0.7,                 // rad/s
-      orbitRadiusMul: 0.65,            // frazione tra minR e maxR
-      chasePlayerWithinTotem: 0.6,     // % del raggio hotspot entro cui “vedono” il player vicino al totem
-      chasePlayerNearGhost: 180,       // metri: se il player è a questa distanza da un ghost, passa all’inseguimento
+      orbitSpeed: 0.7,
+      orbitRadiusMul: 0.65,
+      chasePlayerWithinTotem: 0.6,
+      chasePlayerNearGhost: 180,
     };
+
+    // prev state tracking per eventi
+    this._prevState = new Map();
   }
 
   async init() {
-    // Pool
     for (let i = 0; i < this.params.poolSize; i++) {
       const g = new Ghost({
         ...this.params.ghostOpts,
         getGroundY:  this.getGroundY,
-        // default: inseguono il player (sovrascritto in guard mode)
         getTargetPos: () => this.camera?.position?.clone?.() ?? null,
       });
       await g.load();
@@ -122,6 +126,29 @@ export class GhostSpawner {
 
   pauseAggro(flag){ this._pauseAggro = !!flag; }
   isAggroPaused(){ return !!this._pauseAggro; }
+
+  // reset completo (per Retry/Replay)
+  reset(){
+    // despawn immediato di tutti gli active
+    for (const g of Array.from(this.active)) this._despawnImmediate(g);
+    this.active.clear();
+
+    // timers & stati
+    this.spawnCooldown = this.params.spawnInterval;
+    this._time = 0;
+    this._distAccum = 0;
+    this._waveCooldown = 0;
+
+    this._behindTimers.clear();
+    this._protectUntil.clear();
+    this._prevState.clear();
+
+    this._defense = null;
+    this._capBoost = 0;
+    this._boostActive = false;
+
+    this._pauseAggro = false;
+  }
 
   // === DEFENSE HOTSPOT API ===
   setDefenseHotspot({ pos, radius = 700, capBoost = 2, spawnIntervalMul = 0.6 } = {}){
@@ -207,7 +234,6 @@ export class GhostSpawner {
           g.getTargetPos = () => this.camera.position.clone();
           g._guardMode = false;
           delete g._guardPhase; delete g._guardCenter;
-          // reset boost
           g._chasing = false;
           g.params.speed = g._baseSpeed ?? g.params.speed;
           g.params.burstMultiplier = g._baseBurst ?? g.params.burstMultiplier;
@@ -240,11 +266,17 @@ export class GhostSpawner {
       this._waveCooldown = Math.max(0.5, w.minInterval + (Math.random()*2 - 1) * w.jitter);
     }
 
-    // advance ghosts
+    // advance ghosts + eventi
     for (const g of this.active) {
       if (this._pauseAggro && typeof g.setPacified === 'function') g.setPacified(true);
       if (!this._pauseAggro && typeof g.setPacified === 'function') g.setPacified(false);
       g.update?.(dt);
+
+      const prev = this._prevState.get(g) ?? g.state;
+      if (prev !== g.state) {
+        if (g.state === 'cleansing' && this.onGhostCleansed) this.onGhostCleansed(g);
+        this._prevState.set(g, g.state);
+      }
     }
   }
 
@@ -259,6 +291,7 @@ export class GhostSpawner {
         this.pool.push(g);
         this._behindTimers.delete(g);
         this._protectUntil.delete(g);
+        this._prevState.delete(g);
       }
     }
   }
@@ -270,6 +303,7 @@ export class GhostSpawner {
     this.pool.push(g);
     this._behindTimers.delete(g);
     this._protectUntil.delete(g);
+    this._prevState.delete(g);
   }
   _despawnCleanse(g){
     if (g.state !== 'cleansing') g.cleanse();
@@ -358,7 +392,7 @@ export class GhostSpawner {
       g.setPosition(cand.x, cand.y, cand.z).addTo(this.scene);
       g.appear();
 
-      // === GUARD MODE: se stiamo difendendo un totem, questo ghost pattuglia finché non “vede” il player ===
+      // GUARD MODE quando difendo un totem
       if (this._boostActive && this._defense?.pos) {
         const def = this._defense;
         const orbitR = THREE.MathUtils.lerp(this.params.minR, this.params.maxR, this.guard.orbitRadiusMul);
@@ -366,15 +400,13 @@ export class GhostSpawner {
         g._guardCenter = def.pos.clone();
         g._guardMode   = true;
 
-        // Adding Boost of Energy 
         g._chasing = false;
         g._chaseBoostUntil = 0;
         g._baseSpeed = g.params.speed;
         g._baseBurst = g.params.burstMultiplier;
-        g._boostSpeed = g._baseSpeed * 1.25;       // +25% velocità
-        g._boostBurst = g._baseBurst * 1.15;       // sprint un filo più forte
-        g._boostDuration = 2.0;                    // 2 secondi di boost
-
+        g._boostSpeed = g._baseSpeed * 1.25;
+        g._boostBurst = g._baseBurst * 1.15;
+        g._boostDuration = 2.0;
 
         g.getTargetPos = () => {
           const cam = this.camera.position;
@@ -389,7 +421,6 @@ export class GhostSpawner {
           const seesPlayerNearGhost =
             distPlayerGhost <= this.guard.chasePlayerNearGhost;
 
-          // Here again adding boosting
           if (!this._pauseAggro && (seesPlayerNearTotem || seesPlayerNearGhost)) {
             if (!g._chasing) {
               g._chasing = true;
@@ -397,7 +428,6 @@ export class GhostSpawner {
               g.params.burstMultiplier = g._boostBurst;
               g._chaseBoostUntil = performance.now() * 0.001 + g._boostDuration;
             }
-            // scadenza boost
             if (g._chasing && performance.now() * 0.001 > g._chaseBoostUntil) {
               g.params.speed = g._baseSpeed;
               g.params.burstMultiplier = g._baseBurst;
@@ -405,8 +435,7 @@ export class GhostSpawner {
             return cam.clone();
           }
 
-
-          // Altrimenti orbito il totem
+          // orbita il totem
           const t = (performance.now() * 0.001) + g._guardPhase;
           const x = def.pos.x + Math.cos(t * this.guard.orbitSpeed) * orbitR;
           const z = def.pos.z + Math.sin(t * this.guard.orbitSpeed) * orbitR;
@@ -420,6 +449,7 @@ export class GhostSpawner {
       }
 
       this.active.add(g);
+      this._prevState.set(g, g.state);
       this._protectUntil.set(g, this._time + (this.params.protectSeconds || 0));
       return true;
     }
