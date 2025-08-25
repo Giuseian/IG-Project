@@ -126,7 +126,7 @@ let debugEl;
 const player = { health:1.0, heat:0.0, score:0, beamOn:false, overheated:false };
 
 let hud;
-let beam;      // spotlight scenico
+let beam;      // spotlight scenico (usato come “cono” visivo)
 let beamSystem;
 
 // Systems
@@ -213,15 +213,14 @@ function minDistToOccluders(x, z, occGrid){
 /* ---- Spots per i santuari: PRNG seeded + bande near/mid/far + clearance tronchi ---- */
 function makeSanctuarySpots(count, opt = {}) {
   const {
-    // bande più lontane per “respiro”
     bands = [[1200,1500], [2000,2600], [3000,3800]],
     seed  = 1337,
     occluders = [],
     gridCellSize = 120,
-    totemRadius = 36,     // più largo per clearance realistica
-    margin = 32,          // margine extra
-    minSeparation = 360,  // più spazio tra totem
-    radius = 100,         // ring visibile grande
+    totemRadius = 36,
+    margin = 32,
+    minSeparation = 360,
+    radius = 100,
     holdSeconds = 3.0,
     tries = 3000,
     expandStep = 260,
@@ -326,8 +325,10 @@ async function init(){
   `;
   document.body.appendChild(_reticleEl);
 
-  // Spotlight (solo estetica, visibile quando il beam è attivo)
-  beam = new THREE.SpotLight(0xcff2ff, 0, 60, THREE.MathUtils.degToRad(12), 0.35, 1.0);
+  // Spotlight (solo estetica)
+  const DEFAULT_BEAM_COLOR = 0xcff2ff; // colore arma fuori dai ring
+  // CHANGED: intensità > 0 così la tinta si vede anche quando non stai "sparando"
+  beam = new THREE.SpotLight(DEFAULT_BEAM_COLOR, 1.2, 60, THREE.MathUtils.degToRad(12), 0.35, 1.0);
   beam.visible = false;
   camera.add(beam);
   scene.add(camera);
@@ -508,8 +509,23 @@ async function init(){
     spawner,
     modelUrl: '/assets/models/totem/new_totem.fbx',
     items,
-    decayRate: 0.25,
+    // PUNIZIONE LIEVE: decay basso, tolleranze alte
+    decayRate: 0.12,
     entryPad: 10.0,
+    purifyGrace: 0.9,
+    aimStick: 0.35,
+
+    // Tinta dinamica arma (+ reticolo)
+    onBeamTint: (hexOrNull)=>{
+      const target = (hexOrNull != null) ? hexOrNull : DEFAULT_BEAM_COLOR;
+      if (beam) beam.color.setHex(target);
+      if (_reticleEl){
+        const hexStr = '#'+ (target >>> 0).toString(16).padStart(6,'0');
+        _reticleEl.style.borderColor = hexStr;
+        _reticleEl.style.boxShadow   = '0 0 6px ' + hexStr;
+      }
+    },
+
     onPurified: (idx, totalDone, totalCount)=>{
       player.score += 100;
       if (spawner?.params) {
@@ -517,9 +533,10 @@ async function init(){
         spawner.params.spawnInterval *= 0.9;
       }
       if (scene.fog) scene.fog.density *= 1.07;
-      if (totalDone === totalCount) showWinOverlay();
+      if (typeof showWinOverlay === 'function' && totalDone === totalCount) showWinOverlay();
     }
   });
+
   await sanctuaries.init();
 
   setupDebug(beamTargetObj);
@@ -595,17 +612,61 @@ function animate(){
     // sync HUD heat/overheat
     player.heat       = beamSystem.heat;
     player.overheated = beamSystem.overheated;
+
+    // Sync angolo spotlight con halfAngle del sistema (puramente estetico)
+    if (beam) beam.angle = THREE.MathUtils.degToRad(Math.max(1, beamSystem.halfAngleDeg));
   }
 
   // 2.5) sanctuaries update
   sanctuaries?.update(dt, {
     beamOn: activeBeam,
-    overheated: player.overheated,          // per stato blocked
+    overheated: player.overheated,
     playerPos: camera.position
   });
 
-  // spotlight visivo (si spegne se overheat)
-  if (beam) beam.visible = activeBeam;
+  // === DEFENSE HOTSPOT: più ghost quando ti avvicini a un totem non-done ===
+  if (sanctuaries && spawner?.setDefenseHotspot) {
+    const ctxS = sanctuaries.getNearestIncomplete(camera.position);
+    if (ctxS) {
+      const insideRing = sanctuaries.isInsideRing(camera.position, ctxS);
+      // attivo solo se il totem è in IDLE e sono fuori dal ring ma entro una fascia "di avvicinamento"
+      const APPROACH_OUTER = 700;   // quanto lontano inizia la difesa
+      const RING_BUFFER    = 80;    // non attivare troppo vicino al bordo
+      const nearEdge = ctxS.dist <= (ctxS.radius + sanctuaries.entryPad + RING_BUFFER);
+
+      if (ctxS.state === 'idle' && !insideRing && ctxS.dist <= APPROACH_OUTER && !nearEdge && !sanctuaries.isPurifySafe()) {
+        // più nemici & spawn veloce attorno al totem
+        spawner.setDefenseHotspot({
+          pos: ctxS.pos,
+          radius: APPROACH_OUTER,
+          capBoost: 4,          // +2 oltre maxAlive
+          spawnIntervalMul: 0.30 // 40% più frequente
+        });
+      } else {
+        spawner.clearDefenseHotspot();
+      }
+    } else {
+      spawner.clearDefenseHotspot();
+    }
+  }
+
+
+
+
+  // === Recupera info del santuario più vicino (serve per HUD + luce) ===
+  const info = sanctuaries?.getNearestInfo(camera.position) || null;
+
+  // Spotlight visivo: ON anche in ARMED/PURIFYING con intensità diversa (OFF se overheated)
+  if (beam) {
+    let vis = activeBeam;
+    let inten = activeBeam ? 1.25 : 0.0;
+    if (info) {
+      if (info.state === 'armed')     { vis = true; inten = Math.max(inten, 0.7); }
+      if (info.state === 'purifying') { vis = true; inten = Math.max(inten, 1.2); }
+    }
+    beam.visible   = vis && !player.overheated;
+    beam.intensity = beam.visible ? inten : 0.0;
+  }
 
   // HUD base
   player.beamOn = _fireToggle;
@@ -616,11 +677,9 @@ function animate(){
     { overheated: player.overheated, beamOn: activeBeam }
   );
 
-  // HUD Sanctuary: stato + progresso del più vicino + SAFE badge
-  if (hud.setSanctuary && sanctuaries) {
-    const info = sanctuaries.getNearestInfo(camera.position) || null;
-    const isSafe = sanctuaries.isPurifySafe();
-    hud.setSanctuary(info, { safe: isSafe });
+  // HUD Sanctuary: stato + progresso del più vicino
+  if (hud.setSanctuary) {
+    hud.setSanctuary(info);
   }
 
   // debug info
@@ -777,6 +836,55 @@ function updateDebug(spStats = {}){
     `Heat: ${player.overheated?'<span style="color:#ff6b6b">'+heatPct+'%</span>':heatPct+'%'}  ` +
     `| Beam: ${beamState}  (Pointer Lock: click canvas, ESC per uscire | RMB: AIM | F: power | P:spawn, V:antiPopIn, C:cleanse all, X:nearest, ,/. angle, 9/0 range, Q/E snap, Shift+Q 180°)`;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

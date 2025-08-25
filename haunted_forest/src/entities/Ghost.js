@@ -125,10 +125,10 @@ export class Ghost {
     // >>> SERPENTINA REALE SULLA TRAIETTORIA
     this.weave = {
       enabled:  opts.weave?.enabled ?? true,
-      amp:      opts.weave?.amp ?? 0.35,     // metri di deviazione laterale
-      omega:    opts.weave?.omega ?? 1.2,    // velocità oscillazione
-      fadeNear: opts.weave?.fadeNear ?? 10,   // sotto questa distanza → 0
-      fadeFar:  opts.weave?.fadeFar  ?? 80,   // sopra questa → 100%
+      amp:      opts.weave?.amp ?? 0.35,
+      omega:    opts.weave?.omega ?? 1.2,
+      fadeNear: opts.weave?.fadeNear ?? 10,
+      fadeFar:  opts.weave?.fadeFar  ?? 80,
       phase:    Math.random() * Math.PI * 2,
     };
     this._weavePrev = new THREE.Vector3(0,0,0);
@@ -136,6 +136,12 @@ export class Ghost {
     this.state    = 'inactive';
     this.tState   = 0;
     this.exposure = 0;
+
+    // pacificazione
+    this._pacified = false;
+    this._pacifyZone = null; // { center: Vector3, radius: number }
+    this._keepDistanceBase = null;
+    this._speedBase = null;
 
     this._time = 0;
     this._debugPins = null;
@@ -184,6 +190,47 @@ export class Ghost {
     this.exposure = THREE.MathUtils.clamp(this.exposure + delta, 0, 1);
     if (this.exposure >= 1 && this.state === 'active') { this.cleanse(); return true; }
     return false;
+  }
+
+  /** Pacifica il ghost quando il player è in un totem (armed/purifying) */
+  setPacified(flag, zone = null) {
+    const want = !!flag;
+    const changed = (want !== this._pacified) ||
+                    (want && (zone?.radius !== this._pacifyZone?.radius ||
+                              !zone?.center?.equals?.(this._pacifyZone?.center)));
+
+    if (!changed) return this;
+
+    this._pacified = want;
+    if (this._pacified) {
+      // salva base
+      if (this._keepDistanceBase == null) this._keepDistanceBase = this.params.keepDistance;
+      if (this._speedBase == null)        this._speedBase = this.params.speed;
+
+      // zona pacifica (fallback se non fornita)
+      if (zone && zone.center && isFinite(+zone.radius) && +zone.radius > 0) {
+        this._pacifyZone = { center: zone.center.clone?.() ?? new THREE.Vector3(zone.center.x, zone.center.y||0, zone.center.z),
+                             radius: +zone.radius };
+      } else {
+        this._pacifyZone = null;
+      }
+
+      // distanza minima dal player (fallback) ~ raggio ring tipico
+      const fallbackKeep = 100;
+
+      // imposta keepDistance elevato per evitare avvicinamento al player
+      const perimeter = this._pacifyZone ? this._pacifyZone.radius + 6.0 : fallbackKeep;
+      this.params.keepDistance = Math.max(this._keepDistanceBase ?? 0, perimeter);
+
+      // rallenta un po'
+      this.params.speed = Math.min(this._speedBase, this._speedBase * 0.6);
+    } else {
+      // ripristina parametri
+      this._pacifyZone = null;
+      if (this._keepDistanceBase != null) this.params.keepDistance = this._keepDistanceBase;
+      if (this._speedBase != null)        this.params.speed        = this._speedBase;
+    }
+    return this;
   }
 
   update(dt) {
@@ -285,6 +332,21 @@ export class Ghost {
   _updateActive(dt) {
     if (this.exposure > 0) this.applyExposure(-this.params.exposureFalloff * dt);
 
+    // >>>> BARRIERA SAFE-ZONE: push fuori dal ring se pacificato
+    if (this._pacified && this._pacifyZone) {
+      const cx = this._pacifyZone.center.x, cz = this._pacifyZone.center.z;
+      const dx = this.root.position.x - cx;
+      const dz = this.root.position.z - cz;
+      const r  = Math.hypot(dx, dz);
+      const minR = (this._pacifyZone.radius || 0) + 2.0; // margine visivo
+      if (r < Math.max(0.01, minR)) {
+        const nx = dx / (r || 1e-6), nz = dz / (r || 1e-6);
+        const push = (minR - r);
+        this.root.position.x += nx * push;
+        this.root.position.z += nz * push;
+      }
+    }
+
     if (typeof this.getTargetPos !== 'function') return;
     const target = this.getTargetPos();
     if (!target) return;
@@ -331,7 +393,7 @@ export class Ghost {
       }
     }
 
-    // velocità (burst se lontano)
+    // velocità (burst se lontano) — quando pacificato lo speed è già ridotto
     let spd = this.params.speed;
     if (dist > this.swoop.far) spd *= this.params.burstMultiplier;
 
@@ -348,13 +410,11 @@ export class Ghost {
       this.root.position.z += this.vel.z * step;
     }
 
-    // >>> SERPENTINA: offset laterale sul root
+    // >>> SERPENTINA
     if (this.weave.enabled) {
-      // right = ortogonale alla direzione attuale
       if (this.vel.lengthSq() > 1e-6) _right.set(this.vel.z, 0, -this.vel.x).normalize();
       else                             _right.set(_dir.z, 0, -_dir.x).normalize();
 
-      // fade con distanza e vicino al target
       const kDist = THREE.MathUtils.clamp(
         (dist - this.weave.fadeNear) / Math.max(1e-3, (this.weave.fadeFar - this.weave.fadeNear)), 0, 1
       );
@@ -363,8 +423,8 @@ export class Ghost {
       const A = this.weave.amp * kDist * kNear;
       const s = Math.sin(this.weave.omega * this._time + this.weave.phase);
 
-      const off = _tmpV.copy(_right).multiplyScalar(A * s); // offset istantaneo
-      const delta = _tmpV2.copy(off).sub(this._weavePrev);  // differenza frame-to-frame
+      const off = _tmpV.copy(_right).multiplyScalar(A * s);
+      const delta = _tmpV2.copy(off).sub(this._weavePrev);
       this.root.position.add(delta);
       this._weavePrev.copy(off);
     }
@@ -472,3 +532,4 @@ export class Ghost {
     return this;
   }
 }
+
