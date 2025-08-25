@@ -446,6 +446,9 @@ function hideOverlay(){
   if (_overlayEl && _overlayEl.parentNode) _overlayEl.parentNode.removeChild(_overlayEl);
   _overlayEl = null;
 }
+
+
+
 function showOverlay({ title, text, primary, secondary }){
   ensureOverlayCSS();
   hideOverlay();
@@ -475,19 +478,21 @@ function showGameOverOverlay(){
   showOverlay({
     title: 'You Fell',
     text:  'The ghosts overwhelmed you.',
-    primary:  { label:'Retry',  onClick: ()=>{ resetGame(); } },
-    secondary:{ label:'Close', onClick: ()=>{ hideOverlay(); } }
+    primary:  { label:'Retry',  onClick: ()=>{ resetGame(); } }
   });
 }
+
+
 function showWinOverlay(){
   _frozen = true;
   showOverlay({
     title: 'All Totems Purified!',
     text:  'The forest grows quiet. Play again?',
-    primary:  { label:'Replay', onClick: ()=>{ resetGame(); } },
-    secondary:{ label:'Close', onClick: ()=>{ hideOverlay(); } }
+    primary:  { label:'Replay', onClick: ()=>{ resetGame(); } }
   });
 }
+
+
 window.showWinOverlay = showWinOverlay;
 
 /* ---------------- init ---------------- */
