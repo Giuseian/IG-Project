@@ -404,8 +404,8 @@ async function init(){
     getGroundY,
     getFocusPos,
 
-    poolSize: 14,
-    maxAlive: 5,
+    poolSize: 40,
+    maxAlive: 7,
     spawnInterval: 1.2,
 
     minR: 140,
@@ -626,21 +626,19 @@ function animate(){
 
   // === DEFENSE HOTSPOT: più ghost quando ti avvicini a un totem non-done ===
   if (sanctuaries && spawner?.setDefenseHotspot) {
-    const ctxS = sanctuaries.getNearestIncomplete(camera.position);
+    const ctxS = sanctuaries.getNearestIncomplete?.(camera.position);
     if (ctxS) {
-      const insideRing = sanctuaries.isInsideRing(camera.position, ctxS);
-      // attivo solo se il totem è in IDLE e sono fuori dal ring ma entro una fascia "di avvicinamento"
-      const APPROACH_OUTER = 700;   // quanto lontano inizia la difesa
-      const RING_BUFFER    = 80;    // non attivare troppo vicino al bordo
+      const insideRing = sanctuaries.isInsideRing?.(camera.position, ctxS);
+      const APPROACH_OUTER = 700;
+      const RING_BUFFER    = 80;
       const nearEdge = ctxS.dist <= (ctxS.radius + sanctuaries.entryPad + RING_BUFFER);
 
       if (ctxS.state === 'idle' && !insideRing && ctxS.dist <= APPROACH_OUTER && !nearEdge && !sanctuaries.isPurifySafe()) {
-        // più nemici & spawn veloce attorno al totem
         spawner.setDefenseHotspot({
           pos: ctxS.pos,
           radius: APPROACH_OUTER,
-          capBoost: 4,          // +2 oltre maxAlive
-          spawnIntervalMul: 0.30 // 40% più frequente
+          capBoost: 4,
+          spawnIntervalMul: 0.30
         });
       } else {
         spawner.clearDefenseHotspot();
@@ -649,9 +647,6 @@ function animate(){
       spawner.clearDefenseHotspot();
     }
   }
-
-
-
 
   // === Recupera info del santuario più vicino (serve per HUD + luce) ===
   const info = sanctuaries?.getNearestInfo(camera.position) || null;
@@ -680,6 +675,12 @@ function animate(){
   // HUD Sanctuary: stato + progresso del più vicino
   if (hud.setSanctuary) {
     hud.setSanctuary(info);
+  }
+
+  // Off-screen indicators (spenti quando l'aggro è in pausa: es. purifying)
+  if (hud.setIndicators) {
+    const show = !(spawner?.isAggroPaused?.());
+    hud.setIndicators( show ? buildOffscreenIndicators(camera, spawner, { max: 4, marginPx: 28 }) : [] );
   }
 
   // debug info
@@ -774,6 +775,67 @@ function updateReticle(){
   _reticleEl.style.top  = y + 'px';
 }
 
+/* --------- Off-screen indicators (ghosts) --------- */
+function buildOffscreenIndicators(camera, spawner, { max = 4, marginPx = 28 } = {}){
+  if (!spawner || !camera) return [];
+
+  const items = [];
+  const fwd = new THREE.Vector3(); camera.getWorldDirection(fwd); fwd.y = 0; if (fwd.lengthSq()>0) fwd.normalize();
+
+  const camPos = camera.position.clone();
+  const w = innerWidth, h = innerHeight;
+  const clamp = (v, a, b)=> Math.max(a, Math.min(b, v));
+
+  for (const g of spawner.active || []){
+    if (!g?.root?.visible) continue;
+    if (g.state === 'cleansing' || g.state === 'inactive') continue;
+
+    const gp = g.root.position.clone();
+    const v = gp.clone().sub(camPos); v.y = 0;
+    const dist = v.length();
+    if (!isFinite(dist) || dist < 1e-3) continue;
+
+    // NDC
+    const p = gp.clone().project(camera);
+    const behind = v.dot(fwd) < 0;
+    let nx = p.x, ny = p.y;
+    if (behind){ nx = -nx; ny = -ny; }
+
+    // on-screen (davanti) → non mostrare
+    const onScreen = !behind && nx >= -1 && nx <= 1 && ny >= -1 && ny <= 1;
+    if (onScreen) continue;
+
+    // clamp ai bordi con margine
+    const mx = (marginPx / w) * 2;
+    const my = (marginPx / h) * 2;
+    nx = clamp(nx, -1 + mx, 1 - mx);
+    ny = clamp(ny, -1 + my, 1 - my);
+
+    const sx = (nx * 0.5 + 0.5) * w;
+    const sy = (-ny * 0.5 + 0.5) * h;
+
+    // direzione (dal centro al punto clampato)
+    const ang = Math.atan2(ny, nx); // rad
+
+    // severità + alpha/scale con distanza
+    let severity = 'info';
+    if (dist < 80) severity = 'danger';
+    else if (dist < 160) severity = 'warn';
+
+    const alpha = clamp(1.0 - dist / 500, 0.35, 1.0) * (behind ? 1.0 : 0.95);
+    const scale = clamp(1.2 - dist / 600, 0.75, 1.15);
+
+    // threat score: vicino + dietro = più alto; active > appearing
+    const stateMul = (g.state === 'active') ? 1.0 : 0.8;
+    const threat = stateMul * (behind ? 1.3 : 1.0) * (1 / (dist + 20));
+
+    items.push({ x:sx, y:sy, ang, severity, alpha, scale, threat });
+  }
+
+  items.sort((a,b)=> b.threat - a.threat);
+  return items.slice(0, max);
+}
+
 /* --------- Collisione camera–alberi (soft push-out) --------- */
 function resolveCameraCollision(pos, grid, opt = {}){
   if (!grid) return;
@@ -836,6 +898,26 @@ function updateDebug(spStats = {}){
     `Heat: ${player.overheated?'<span style="color:#ff6b6b">'+heatPct+'%</span>':heatPct+'%'}  ` +
     `| Beam: ${beamState}  (Pointer Lock: click canvas, ESC per uscire | RMB: AIM | F: power | P:spawn, V:antiPopIn, C:cleanse all, X:nearest, ,/. angle, 9/0 range, Q/E snap, Shift+Q 180°)`;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
