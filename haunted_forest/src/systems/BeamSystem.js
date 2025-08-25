@@ -203,10 +203,14 @@ export class BeamSystem {
         if (dist < visualLen) visualLen = dist;
       }
 
-      // dopo il loop, aggiorna exposure per HUD
+      // dopo il loop che seleziona this.focusedGhost...
       this.focusedExposure = this.focusedGhost ? (this.focusedGhost.exposure || 0) : 0;
-    }
 
+      // NEW: accendi un breve pulse del ring quando il beam è attivo e c'è un focus
+      if (this.firing && this.focusedGhost && this.focusedGhost._ring) {
+        this.focusedGhost._ring.pulseT = Math.max(this.focusedGhost._ring.pulseT, 0.10);
+      }
+    }
     this._updateVisual(visualLen);
   }
 

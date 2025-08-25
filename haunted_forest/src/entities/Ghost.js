@@ -4,72 +4,100 @@ import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/
 import { OBJLoader }   from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/OBJLoader.js';
 import { patchGhostMaterial } from '../entities/dissolvePatch.js';
 
+/* ===== util / helpers ===== */
 function isFeature(mesh, mat) {
   const a = (mesh?.name || '').toLowerCase();
   const b = (mat?.name  || '').toLowerCase();
   const re = /(ghost_)?(eyes?|mouth|cheeks?)/;
   return re.test(a) || re.test(b);
 }
-
 function buildGhostMaterialsForMesh(mesh, opacityBody) {
   const src = mesh.material;
   const srcMats = Array.isArray(src) ? src : [src];
   const geom = mesh.geometry;
-
   const newMats = srcMats.map((m) => {
     const feature = isFeature(mesh, m);
     if (feature) {
       return new THREE.MeshStandardMaterial({
         name: (m?.name || '') + '_feature',
         color: (m?.color ? m.color.clone() : new THREE.Color(0x111111)),
-        metalness: 0.0,
-        roughness: 0.6,
-        transparent: false,
-        depthWrite: true,
-        depthTest: true,
-        vertexColors: !!geom.attributes.color,
+        metalness: 0.0, roughness: 0.6, transparent: false,
+        depthWrite: true, depthTest: true, vertexColors: !!geom.attributes.color,
       });
     } else {
       const mat = new THREE.MeshStandardMaterial({
         name: (m?.name || '') + '_body',
         color: (m?.color ? m.color.clone() : new THREE.Color(0xffffff)),
-        metalness: 0.0,
-        roughness: 0.35,
-        transparent: true,
-        opacity: opacityBody,
-        emissive: new THREE.Color(0x66ffff),
-        emissiveIntensity: 0.40,
-        depthWrite: false,
-        depthTest: true,
-        vertexColors: !!geom.attributes.color,
+        metalness: 0.0, roughness: 0.35, transparent: true, opacity: opacityBody,
+        emissive: new THREE.Color(0x66ffff), emissiveIntensity: 0.40,
+        depthWrite: false, depthTest: true, vertexColors: !!geom.attributes.color,
       });
       patchGhostMaterial(mat);
       return mat;
     }
   });
-
   mesh.material = Array.isArray(src) ? newMats : newMats[0];
   return newMats;
 }
 
-/* ---------- util per l’arco (donut sector) ---------- */
-function makeDonutArc(radius = 2.2, thickness = 0.35, theta = Math.PI * 0.001) {
-  const outerR = Math.max(0.001, radius);
-  const innerR = Math.max(0.001, radius - thickness);
-  const shape = new THREE.Shape();
-  const start = -Math.PI * 0.5; // parte dall’alto, senso orario
-  const end   = start + Math.max(0.0001, Math.min(theta, Math.PI * 2 - 1e-4));
+/* ===== ring shader stuff ===== */
+const _UP = new THREE.Vector3(0,1,0);
+const _QN = new THREE.Quaternion();
 
-  shape.absarc(0, 0, outerR, start, end, false);
-  const hole = new THREE.Path();
-  hole.absarc(0, 0, innerR, end, start, true);
-  shape.holes.push(hole);
+function makeArcMaterial(outerR, innerR) {
+  const uniforms = {
+    uOuterR:   { value: outerR },
+    uInnerR:   { value: innerR },
+    uProg:     { value: 0.0001 },            // 0..1 (exposure)
+    uOpacity:  { value: 0.75 },
+    uPulse:    { value: 0.0 },               // 0..1 breve flash
+    uFeather:  { value: Math.max(outerR, innerR) * 0.02 }, // sfumatura bordo
+    uC1:       { value: new THREE.Color(0x33d1ff) }, // cyan
+    uC2:       { value: new THREE.Color(0xffd166) }, // amber
+    uC3:       { value: new THREE.Color(0xff6b6b) }, // red
+  };
 
-  const geo = new THREE.ShapeGeometry(shape, 48);
-  geo.rotateX(-Math.PI/2); // piatto a terra
-  return geo;
+  const vert = `
+    varying vec2 vPos;      // xz locali
+    void main(){
+      vPos = position.xz;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+    }
+  `;
+  const frag = `
+    precision highp float;
+    varying vec2 vPos;
+    uniform float uOuterR, uInnerR, uProg, uOpacity, uPulse, uFeather;
+    uniform vec3 uC1, uC2, uC3;
+    void main(){
+      float r = length(vPos);
+
+      // ring con feather
+      float ring = smoothstep(uInnerR, uInnerR + uFeather, r)
+                 * (1.0 - smoothstep(uOuterR - uFeather, uOuterR, r));
+      if (ring <= 0.0) discard;
+
+      // angolo 0 in alto (+Z), orario
+      float ang = atan(vPos.x, vPos.y);           // [-pi,pi]
+      if (ang < 0.0) ang += 6.28318530718;        // [0,2pi)
+      float theta = clamp(uProg, 0.0, 1.0) * 6.28318530718;
+      if (ang > theta) discard;
+
+      // colore progressivo
+      vec3 col = mix(uC1, uC2, smoothstep(0.20, 0.60, clamp(uProg,0.0,1.0)));
+      col = mix(col, uC3, smoothstep(0.60, 1.00, clamp(uProg,0.0,1.0)));
+
+      float a = uOpacity * (0.85 + 0.15 * clamp(uPulse,0.0,1.0));
+      gl_FragColor = vec4(col, a) * ring;
+    }
+  `;
+  return new THREE.ShaderMaterial({
+    uniforms, vertexShader: vert, fragmentShader: frag,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false, toneMapped: false
+  });
 }
 
+/* ===== scratch ===== */
 const _wRoot  = new THREE.Vector3();
 const _wModel = new THREE.Vector3();
 const _dir    = new THREE.Vector3();
@@ -77,6 +105,7 @@ const _right  = new THREE.Vector3();
 const _tmpV   = new THREE.Vector3();
 const _tmpV2  = new THREE.Vector3();
 
+/* ===== Ghost ===== */
 export class Ghost {
   constructor(opts = {}) {
     this.url           = opts.url ?? '/assets/models/ghost/ghost.glb';
@@ -85,8 +114,10 @@ export class Ghost {
     this.opacityBody   = opts.opacityBody ?? 0.75;
 
     this.getGroundY = opts.getGroundY || ((x, z) => 0.0);
-    this.clearance  = (opts.clearance ?? 0.05);
+    // opzionale, se la fornisci inclini l’anello
+    this.getGroundNormal = opts.getGroundNormal || null;
 
+    this.clearance  = (opts.clearance ?? 0.05);
     this.getTargetPos = opts.getTargetPos || null;
 
     this.root = new THREE.Group(); this.root.name = 'Ghost';
@@ -140,7 +171,7 @@ export class Ghost {
     this.alignSnapWindow   = opts.alignSnapWindow ?? 0.15;
     this._alignSnapT       = 0;
 
-    // >>> SERPENTINA REALE SULLA TRAIETTORIA
+    // serpentina
     this.weave = {
       enabled:  opts.weave?.enabled ?? true,
       amp:      opts.weave?.amp ?? 0.35,
@@ -161,7 +192,7 @@ export class Ghost {
     this._keepDistanceBase = null;
     this._speedBase = null;
 
-    // ring (diegetic)
+    // ring (diegetic, shader-based)
     this._ring = { group:null, base:null, arc:null, lastT:-1, radius:2.2, pulseT:0, pulseMax:0.22 };
     this._time = 0;
     this._debugPins = null;
@@ -229,11 +260,9 @@ export class Ghost {
 
     this._pacified = want;
     if (this._pacified) {
-      // salva base
       if (this._keepDistanceBase == null) this._keepDistanceBase = this.params.keepDistance;
       if (this._speedBase == null)        this._speedBase = this.params.speed;
 
-      // zona pacifica (fallback se non fornita)
       if (zone && zone.center && isFinite(+zone.radius) && +zone.radius > 0) {
         this._pacifyZone = { center: zone.center.clone?.() ?? new THREE.Vector3(zone.center.x, zone.center.y||0, zone.center.z),
                              radius: +zone.radius };
@@ -281,7 +310,7 @@ export class Ghost {
       }
     }
 
-    // === Ring diegetico (posizione/vis) ===
+    // Ring diegetico
     this._updateRing(dt);
   }
 
@@ -355,13 +384,13 @@ export class Ghost {
   _updateActive(dt) {
     if (this.exposure > 0) this.applyExposure(-this.params.exposureFalloff * dt);
 
-    // >>>> BARRIERA SAFE-ZONE: push fuori dal ring se pacificato
+    // barriera safe-zone
     if (this._pacified && this._pacifyZone) {
       const cx = this._pacifyZone.center.x, cz = this._pacifyZone.center.z;
       const dx = this.root.position.x - cx;
       const dz = this.root.position.z - cz;
       const r  = Math.hypot(dx, dz);
-      const minR = (this._pacifyZone.radius || 0) + 2.0; // margine visivo
+      const minR = (this._pacifyZone.radius || 0) + 2.0;
       if (r < Math.max(0.01, minR)) {
         const nx = dx / (r || 1e-6), nz = dz / (r || 1e-6);
         const push = (minR - r);
@@ -374,7 +403,6 @@ export class Ghost {
     const target = this.getTargetPos();
     if (!target) return;
 
-    // direzione verso il target (XZ)
     _dir.subVectors(target, this.root.position);
     _dir.y = 0;
     const dist = _dir.length();
@@ -405,7 +433,6 @@ export class Ghost {
           this.vel.copy(cur);
         }
       }
-
       if (this.vel.lengthSq() > 1e-6) {
         const yawTarget = Math.atan2(this.vel.x, this.vel.z);
         let dy = yawTarget - this.yaw;
@@ -416,7 +443,7 @@ export class Ghost {
       }
     }
 
-    // velocità (burst se lontano) — quando pacificato lo speed è già ridotto
+    // velocità
     let spd = this.params.speed;
     if (dist > this.swoop.far) spd *= this.params.burstMultiplier;
 
@@ -433,14 +460,12 @@ export class Ghost {
       this.root.position.z += this.vel.z * step;
     }
 
-    // >>> SERPENTINA
+    // serpentina
     if (this.weave.enabled) {
       if (this.vel.lengthSq() > 1e-6) _right.set(this.vel.z, 0, -this.vel.x).normalize();
       else                             _right.set(_dir.z, 0, -_dir.x).normalize();
 
-      const kDist = THREE.MathUtils.clamp(
-        (dist - this.weave.fadeNear) / Math.max(1e-3, (this.weave.fadeFar - this.weave.fadeNear)), 0, 1
-      );
+      const kDist = THREE.MathUtils.clamp((dist - this.weave.fadeNear) / Math.max(1e-3, (this.weave.fadeFar - this.weave.fadeNear)), 0, 1);
       const kNear = THREE.MathUtils.clamp(desired / (arriveR * 1.5), 0, 1);
 
       const A = this.weave.amp * kDist * kNear;
@@ -475,8 +500,6 @@ export class Ghost {
 
   _updateIdle(dt) {
     const t = this._time, ph = this.idle.phase;
-
-    // bobbing
     let y = this.idle.baseY + this.idle.ampBob * Math.sin(this.idle.omegaBob * t + ph);
 
     // clamp terreno in locale
@@ -491,7 +514,7 @@ export class Ghost {
     const ySafe = Math.min(this.idle.maxY, Math.max(floorLocal, y));
     this.rig.position.y = ySafe;
 
-    // sway (pitch/roll leggeri)
+    // sway
     const rx = this.idle.swayAmpX * Math.sin(this.idle.swayOmega * t + ph * 0.7);
     const rz = this.idle.swayAmpZ * Math.sin(this.idle.swayOmega * t + ph * 0.9);
     this.rig.rotation.x = rx;
@@ -548,27 +571,42 @@ export class Ghost {
     this.model.position.x = 0; this.model.position.z = 0;
   }
 
-  /* ---------- ring diegetico ---------- */
+  /* ---------- ring diegetico (shader-based) ---------- */
+/* ---------- ring diegetico (shader-based) ---------- */
   _buildRing(){
-    const r = this._ring.radius;
-    const baseGeo = new THREE.RingGeometry(r * 0.82, r * 1.00, 48);
+  const r = this._ring.radius;
+
+  // base tenue (con polygonOffset per battere lo z-fighting)
+  const baseGeo = new THREE.RingGeometry(r * 0.82, r * 1.00, 64);
     baseGeo.rotateX(-Math.PI/2);
     const baseMat = new THREE.MeshBasicMaterial({
-      color: 0x99e6ff, transparent: true, opacity: 0.18, depthWrite:false, fog:false,
-      blending: THREE.AdditiveBlending
+      color: 0x99e6ff,
+      transparent: true,
+      opacity: 0.22,
+      depthWrite: false,
+      depthTest: false,          // <— non testare contro la depth del terreno
+      blending: THREE.AdditiveBlending,
+      fog: false,
+      toneMapped: false,
+      polygonOffset: true,       // <— e comunque spostalo un filo in avanti
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1
     });
     const base = new THREE.Mesh(baseGeo, baseMat);
+    base.renderOrder = 999;
 
-    const arcGeo = makeDonutArc(r * 1.00, r * 0.26, 0.0001);
-    const arcMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff, transparent:true, opacity: 0.75, depthWrite:false, fog:false,
-      blending: THREE.AdditiveBlending
-    });
+    // arco via shader: un quad XZ grande 2r
+    const arcGeo = new THREE.PlaneGeometry(2*r, 2*r);
+    arcGeo.rotateX(-Math.PI/2);
+    const arcMat = makeArcMaterial(r * 1.00, r * 0.74);
+    arcMat.depthWrite = false;
+    arcMat.depthTest  = false;   // <— idem
     const arc = new THREE.Mesh(arcGeo, arcMat);
+    arc.renderOrder = 1000;
 
     const g = new THREE.Group();
     g.add(base); g.add(arc);
-    g.visible = false; // visibilità gestita da exposure/pulse
+    g.visible = false;
     this.root.add(g);
 
     this._ring.group = g;
@@ -577,39 +615,52 @@ export class Ghost {
     this._ring.lastT = -1;
   }
 
+
   _updateRing(dt){
     const R = this._ring;
-    if (!R.group) return;
+    if (!R?.group) return;
 
-    // posizione: sempre al suolo sotto al ghost
+    // posizione sul terreno (leggermente sopra per evitare z-fighting)
     const gx = this.root.position.x, gz = this.root.position.z;
     const gy = this.getGroundY(gx, gz);
-    // y locale che porta il gruppo alla quota del terreno
-    R.group.position.set(0, (gy + 0.02) - this.root.position.y, 0);
+    R.group.position.set(0, (gy + 0.10) - this.root.position.y, 0);
 
-    // visibilità
-    R.pulseT = Math.max(0, R.pulseT - dt);
-    const show = (this.exposure > 0.05) || (R.pulseT > 0) || (this.state === 'appearing' && this.tState < 0.25);
-    R.group.visible = show && this.root.visible;
-
-    // opacità base con un pizzico di pulse
-    if (R.base) {
-      const k = (R.pulseT > 0) ? (0.18 + 0.25 * (R.pulseT / R.pulseMax)) : 0.18;
-      R.base.material.opacity = k;
-      R.base.material.needsUpdate = true;
+    // opzionale: tilt con normale del terreno
+    if (typeof this.getGroundNormal === 'function') {
+      const n = this.getGroundNormal(gx, gz) || _UP;
+      _QN.setFromUnitVectors(_UP, n.clone().normalize());
+      R.group.quaternion.copy(_QN);
+    } else {
+      R.group.quaternion.identity();
     }
 
-    // arco progresso: ricrea geo solo se cambia in modo apprezzabile
+    // visibilità + pulse (NUOVO: base sempre visibile quando 'active')
+    R.pulseT = Math.max(0, R.pulseT - dt);
     const t = THREE.MathUtils.clamp(this.exposure, 0, 1);
-    if (Math.abs(t - R.lastT) > 0.01 && R.arc) {
-      const r = R.radius;
-      const theta = Math.max(0.0001, t * Math.PI * 2);
-      const newGeo = makeDonutArc(r * 1.00, r * 0.26, theta);
-      R.arc.geometry.dispose();
-      R.arc.geometry = newGeo;
-      R.lastT = t;
+
+    const activeOrAppearing = (this.state === 'active') || (this.state === 'appearing' && this.tState < 0.25);
+    const pulsing           = (R.pulseT > 0);
+    const showBaseWhenActive= (this.state === 'active'); // forza la base-on quando attivo
+
+    R.group.visible = (activeOrAppearing || pulsing || showBaseWhenActive) && this.root.visible;
+
+    // base opacity con un po’ di pulse (più tenue se sempre visibile)
+    if (R.base) {
+      const baseAlpha = showBaseWhenActive ? 0.16 : 0.22;
+      const k = pulsing ? (baseAlpha + 0.28 * (R.pulseT / R.pulseMax)) : baseAlpha;
+      R.base.material.opacity = k;
+    }
+
+    // arco: aggiorna uniform (se exposure==0, lo shader lo scarta comunque)
+    if (R.arc?.material?.uniforms) {
+      const U = R.arc.material.uniforms;
+      U.uProg.value  = t;
+      U.uPulse.value = pulsing ? (R.pulseT / R.pulseMax) : 0.0;
     }
   }
+
+
+
 
   setDebugMode(mode = 0) {
     for (const s of this.uniformSets) {
@@ -618,3 +669,4 @@ export class Ghost {
     return this;
   }
 }
+
