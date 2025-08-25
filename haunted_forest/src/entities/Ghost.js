@@ -11,6 +11,8 @@ function isFeature(mesh, mat) {
   const re = /(ghost_)?(eyes?|mouth|cheeks?)/;
   return re.test(a) || re.test(b);
 }
+
+
 function buildGhostMaterialsForMesh(mesh, opacityBody) {
   const src = mesh.material;
   const srcMats = Array.isArray(src) ? src : [src];
@@ -18,21 +20,41 @@ function buildGhostMaterialsForMesh(mesh, opacityBody) {
   const newMats = srcMats.map((m) => {
     const feature = isFeature(mesh, m);
     if (feature) {
-      return new THREE.MeshStandardMaterial({
+      const fm = new THREE.MeshStandardMaterial({
         name: (m?.name || '') + '_feature',
         color: (m?.color ? m.color.clone() : new THREE.Color(0x111111)),
-        metalness: 0.0, roughness: 0.6, transparent: false,
-        depthWrite: true, depthTest: true, vertexColors: !!geom.attributes.color,
+        metalness: 0.0, roughness: 0.6,
+        transparent: true, opacity: Math.min(1, opacityBody + 0.15),
+        depthWrite: false, depthTest: true,
+        vertexColors: !!geom.attributes.color,
+        emissive: new THREE.Color(0x000000), emissiveIntensity: 0.0
       });
+
+      // stesso dissolve del corpo, ma con un bordo leggermente diverso e (volendo) un micro sfasamento
+      patchGhostMaterial(fm, {
+        edgeColor: 0xffd166,   // amber per features (o tieni 0x66ffff se vuoi uguale)
+        edgeWidth: 0.025,      // un filo più sottile
+        noiseScale: 1.15,
+        thresholdBias: -0.03   // dissolve un attimo DOPO il corpo (metti 0 per in-sync)
+      });
+
+      return fm;
     } else {
+      // corpo (come prima)
       const mat = new THREE.MeshStandardMaterial({
         name: (m?.name || '') + '_body',
         color: (m?.color ? m.color.clone() : new THREE.Color(0xffffff)),
-        metalness: 0.0, roughness: 0.35, transparent: true, opacity: opacityBody,
+        metalness: 0.0, roughness: 0.35,
+        transparent: true, opacity: opacityBody,
         emissive: new THREE.Color(0x66ffff), emissiveIntensity: 0.40,
-        depthWrite: false, depthTest: true, vertexColors: !!geom.attributes.color,
+        depthWrite: false, depthTest: true,
+        vertexColors: !!geom.attributes.color,
       });
-      patchGhostMaterial(mat);
+      patchGhostMaterial(mat, {
+        noiseScale: 0.65,  // feature più grandi → meno forellini
+        edgeWidth: 0.06,   // bordo più largo → transizione più dolce (meno aliasing)
+        flowSpeed: 0.35    // meno “sfarfallio” del pattern
+      });
       return mat;
     }
   });
@@ -237,7 +259,11 @@ export class Ghost {
 
   spawnAt(x, y, z) { this.setPosition(x, y, z); return this.appear(); }
   appear()    { return this._enter('appearing'); }
-  activate()  { return this._enter('active'); }
+  activate(){
+    this._enter('active');     // fa tutto come prima
+    this._setThreshold(0.15);  // poi forza il livello “pieno”
+    return this;
+  }
   cleanse()   { return this._enter('cleansing'); }
   deactivate(){ return this._enter('inactive'); }
 

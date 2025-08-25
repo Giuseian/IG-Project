@@ -1282,13 +1282,27 @@ function updateDebug(spStats = {}){
   const cone  = window.beamSystem?.halfAngleDeg ?? '-';
   const range = window.beamSystem?.maxRange ?? '-';
 
-  debugEl.innerHTML =
-    `Fog: ${scene.fog?.density.toExponential?.(2)}  |  ` +
-    `Exposure: ${renderer.toneMappingExposure.toFixed?.(2)}  |  ` +
+//   debugEl.innerHTML =
+//     `Fog: ${scene.fog?.density.toExponential?.(2)}  |  ` +
+//     `Exposure: ${renderer.toneMappingExposure.toFixed?.(2)}  |  ` +
+//     `Spawner: ${alive}/${maxA} (aggro:${aggro})  |  ` +
+//     `Beam: ${beamState}  cone:${cone}°  range:${range}  |  ` +
+//     `Wisps:${_wispsEnabled?'ON':'OFF'}`;
+// }
+
+debugEl.innerHTML =
     `Spawner: ${alive}/${maxA} (aggro:${aggro})  |  ` +
-    `Beam: ${beamState}  cone:${cone}°  range:${range}  |  ` +
-    `Wisps:${_wispsEnabled?'ON':'OFF'}`;
-}
+    ` P:spawn, V:antiPopIn, ,/. angle, 9/0 range, Q/E snap, Shift+Q 180°, W: wisps, [/] fog, M: fog anim)`;
+} 
+
+//   debugEl.innerHTML =
+//       `Fog: ${scene.fog?.density}  |  ` +
+//       `Animate Fog ${animateFog?'ON':'OFF'}${spLine}${beamInfo}  |  ` +
+//       `Spawner: ${alive}/${maxA} (aggro:${aggro})  |  ` +
+//       `Beam: ${beamState}  cone:${cone}°  range:${range}  |  ` +
+//       `Wisps:${_wispsEnabled?'ON':'OFF'}` +
+//       `P:spawn, V:antiPopIn, ,/. angle, 9/0 range, Q/E snap, Shift+Q 180°, W: wisps, [/] fog, M: fog anim)`
+// }
 
 
 // Previous Update Debug 

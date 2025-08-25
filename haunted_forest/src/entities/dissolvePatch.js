@@ -5,21 +5,23 @@ export function patchGhostMaterial(mat, opts = {}) {
   if (!mat || mat.isMaterial !== true) return;
   if (mat.userData._ghostPatched) return;
 
-  const threshold   = opts.threshold   ?? 0.98;
-  const edgeWidth   = opts.edgeWidth   ?? 0.035;
-  const edgeColor   = new THREE.Color(opts.edgeColor ?? 0x66ffff);
-  const noiseScale  = opts.noiseScale  ?? 1.1;
-  const flowSpeed   = opts.flowSpeed   ?? 0.6;
-  const DEBUG_VIEWS = opts.enableDebugViews ?? true;
+  const threshold     = opts.threshold     ?? 0.98;
+  const edgeWidth     = opts.edgeWidth     ?? 0.035;
+  const edgeColor     = new THREE.Color(opts.edgeColor ?? 0x66ffff);
+  const noiseScale    = opts.noiseScale    ?? 1.1;
+  const flowSpeed     = opts.flowSpeed     ?? 0.6;
+  const thresholdBias = opts.thresholdBias ?? 0.0;     // <<< NOVITÀ
+  const DEBUG_VIEWS   = opts.enableDebugViews ?? true;
 
   const uniforms = mat.userData._ghostUniforms || {
-    uThreshold:   { value: threshold },
-    uEdgeWidth:   { value: edgeWidth },
-    uEdgeColor:   { value: edgeColor },
-    uNoiseScale:  { value: noiseScale },
-    uFlowSpeed:   { value: flowSpeed },
-    uPulseTime:   { value: 0.0 },
-    uDebugMode:   { value: 0.0 },
+    uThreshold:     { value: threshold },
+    uEdgeWidth:     { value: edgeWidth },
+    uEdgeColor:     { value: edgeColor },
+    uNoiseScale:    { value: noiseScale },
+    uFlowSpeed:     { value: flowSpeed },
+    uPulseTime:     { value: 0.0 },
+    uDebugMode:     { value: 0.0 },
+    uThresholdBias: { value: thresholdBias },  // <<< NOVITÀ
   };
   mat.userData._ghostUniforms = uniforms;
   mat.userData._ghostPatched = true;
@@ -36,6 +38,7 @@ export function patchGhostMaterial(mat, opts = {}) {
     mat.userData._dbgCompileCount++;
     Object.assign(shader.uniforms, uniforms);
 
+    // world pos per il noise
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>',
         `#include <common>
@@ -56,7 +59,8 @@ export function patchGhostMaterial(mat, opts = {}) {
       uniform float uNoiseScale;
       uniform float uFlowSpeed;
       uniform float uPulseTime;
-      uniform float uDebugMode; // 0..3
+      uniform float uDebugMode;     // 0..3
+      uniform float uThresholdBias; // <<< NOVITÀ
 
       float hash(vec3 p){
         p = fract(p * 0.3183099 + vec3(0.1,0.2,0.3));
@@ -95,15 +99,16 @@ export function patchGhostMaterial(mat, opts = {}) {
         return s;
       }
 
+      // debug temps
       float g_n, g_thr, g_w, g_edge;
     `;
 
-    // ---- *** SOLO CAMBIO: variabili rinominate + scope per evitare collisioni con la fog ***
+    // blocco principale (rinominato gh_* per non collidere con altri chunk)
     const preBlock = `
     {
       vec3  gh_p   = vWorldPos * uNoiseScale + vec3(0.0, 0.0, uPulseTime * uFlowSpeed);
       float gh_n   = clamp(fbm(gh_p), 0.0, 1.0);
-      float gh_thr = uThreshold;
+      float gh_thr = clamp(uThreshold + uThresholdBias, 0.0, 1.0);  // <<< NOVITÀ
       float gh_w   = uEdgeWidth;
       float gh_aa  = fwidth(gh_n) * 2.0;
 
@@ -137,16 +142,9 @@ export function patchGhostMaterial(mat, opts = {}) {
       .replace('#include <dithering_fragment>', `${postBlock}\n#include <dithering_fragment>`);
   };
 
+  // settaggi consigliati per la trasparenza
   mat.transparent = true;
   mat.depthTest   = true;
   mat.depthWrite  = false;
   mat.needsUpdate = true;
 }
-
-
-
-
-
-
-
-

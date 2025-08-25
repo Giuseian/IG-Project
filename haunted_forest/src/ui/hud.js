@@ -200,7 +200,7 @@ export function initHUD() {
     position:'fixed',
     left:'50%',               // centrato
     right:'auto',
-    bottom:'14px',
+    bottom:'40px',
     transform:'translateX(-50%)', // centrato
     zIndex:10001,
     display:'flex',
