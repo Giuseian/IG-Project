@@ -1,12 +1,29 @@
+// hud.js
+// -----------------------------------------------------------------------------
+// initHUD()
+//  - Inietta stile e markup dell’HUD (due skin: 'pixel' | 'neo')
+//  - Espone una piccola API per aggiornare pannelli e indicatori:
+//      set(health01, heat01, score, { overheated, beamOn })
+//      setSanctuary({ state, t, safe, uiDim })
+//      setIndicators(items)         // offscreen arrows
+//      setControlsHandlers({...})   // callbacks dei keycaps UI
+//      setDayNightIcon(isNight)     // 🌙 / ☀︎
+//      setDebugActive(on)           // evidenzia tasto debug
+//  - Non dipende da framework; puro DOM + CSS.
+// -----------------------------------------------------------------------------
+
 export function initHUD() {
-  const VALID_SKINS = new Set(['pixel','neo']);
-  const SKIN = (()=>{
+  /* ============================== SKIN ============================== */
+
+  const VALID_SKINS = new Set(['pixel', 'neo']);
+  const SKIN = (() => {
     const qs = new URLSearchParams(location.search).get('skin');
     const ls = localStorage.getItem('hudSkin');
     return VALID_SKINS.has(qs) ? qs : (VALID_SKINS.has(ls) ? ls : 'pixel');
   })();
 
-  // ---------- STYLE ----------
+  /* ============================== STILI ============================= */
+
   if (!document.getElementById('hud-style')) {
     const style = document.createElement('style');
     style.id = 'hud-style';
@@ -33,7 +50,7 @@ export function initHUD() {
       .indic .arrow{ width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-bottom:14px solid var(--col,#93c5fd); }
       .indic.info{--col:#93c5fd}.indic.warn{--col:#fbbf24}.indic.danger{--col:#ff6b6b}
 
-      /* Hearts (emoji) */
+      /* Hearts */
       .hearts{ display:flex; gap:8px; align-items:center; margin:6px 0; }
       .hearts .h{
         font-size:16px; filter: drop-shadow(0 1px 0 #0006);
@@ -41,12 +58,13 @@ export function initHUD() {
       }
       .hearts .h.dim{ opacity:.4; filter: grayscale(.15) saturate(.8); }
       .hearts .h.off{ opacity:0; transform: scale(.8); pointer-events:none; }
-      /* Keycaps: stato attivo (per F3) */
+
+      /* Keycaps + dim */
       .keycap.on{box-shadow: 0 0 12px #22e3ff80, inset 0 0 0 2px #22e3ff55; }
       .hud-dim{ opacity:.45; filter: grayscale(.2) saturate(.85); transition: opacity .18s ease, filter .18s ease; }
     `;
 
-    /* ===== PIXEL RETRO ===== */
+    /* ===== Skin: PIXEL RETRO ===== */
     if (SKIN === 'pixel') {
       css += `
         @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
@@ -86,7 +104,7 @@ export function initHUD() {
       `;
     }
 
-    /* ===== NEO ===== */
+    /* ===== Skin: NEO ===== */
     if (SKIN === 'neo') {
       css += `
         @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@900&display=swap');
@@ -113,7 +131,7 @@ export function initHUD() {
       `;
     }
 
-    /* ===== Sanctuary state glow (comune a entrambe le skin) ===== */
+    /* ===== Badge stato Sanctuary (comune) ===== */
     css += `
       .badge.state{ transition: filter .12s ease, box-shadow .12s ease, background-color .12s ease, color .12s ease; }
       .badge.state.idle{ background:#112036; color:#cfe3ff; box-shadow:none; animation:none; }
@@ -122,19 +140,39 @@ export function initHUD() {
       .badge.state.done{ background:#13311c; color:#bfffd9; box-shadow:0 0 10px #10b98155, inset 0 0 6px #10b98133; animation:none; }
     `;
 
-    document.head.appendChild(style);
     style.textContent = css;
+    document.head.appendChild(style);
   }
 
-  // ---------- MARKUP ----------
-  const root = document.createElement('div'); root.id = 'hud-root';
-  const left = document.createElement('div'); left.id = 'hud-left'; left.className = 'hud-stack'; left.style.left='14px'; left.style.top='14px';
-  const right= document.createElement('div'); right.id= 'hud-right'; right.className='hud-stack';
-  Object.assign(right.style,{right:'14px', top:'14px', display:'flex', flexDirection:'column', gap:'12px', alignItems:'flex-end'});
+  // Stile keycaps (una sola volta)
+  if (!document.getElementById('hud-style-keycaps')) {
+    const cs = document.createElement('style'); cs.id = 'hud-style-keycaps';
+    cs.textContent = `
+      .keycap{
+        width:56px;height:56px;border:0;border-radius:12px;cursor:pointer;
+        color:#e8f1ff;background:#1f2a3aee;backdrop-filter:blur(4px);
+        box-shadow:0 10px 24px #0009, inset 0 1px 0 #ffffff22;
+        display:flex;flex-direction:column;align-items:center;justify-content:center;
+      }
+      .keycap .k{font-weight:800;font-size:18px;line-height:1;margin-bottom:2px}
+      .keycap small{font-size:10px;opacity:.8;letter-spacing:.2px}
+      .keycap.key-accent{background:#17445fee}
+      .keycap.on{box-shadow:0 0 14px #22f3, inset 0 1px 0 #ffffff33; background:#216a8bee}
+      #hud-keys .keycap:active{ transform:translateY(1px); }
+    `;
+    document.head.appendChild(cs);
+  }
+
+  /* ============================== MARKUP ============================= */
+
+  const root  = document.createElement('div'); root.id = 'hud-root';
+  const left  = document.createElement('div'); left.id  = 'hud-left';  left.className  = 'hud-stack'; left.style.left = '14px'; left.style.top = '14px';
+  const right = document.createElement('div'); right.id = 'hud-right'; right.className = 'hud-stack';
+  Object.assign(right.style, { right: '14px', top: '14px', display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'flex-end' });
   root.appendChild(left); root.appendChild(right);
   document.body.appendChild(root);
 
-  // Sanctuary (LEFT) — rimosso badge distanza
+  // Sanctuary tile (LEFT)
   const leftSanct = document.createElement('div');
   leftSanct.className = 'tile compact';
   leftSanct.innerHTML = `
@@ -148,10 +186,11 @@ export function initHUD() {
   `;
   left.appendChild(leftSanct);
 
-  // RIGHT: HEALTH (top), SCORE, BEAM
+  // RIGHT: Health
   const tHealth = document.createElement('div');
   tHealth.className = 'tile';
-  tHealth.innerHTML = `<div class="tabTitle">HEALTH</div>
+  tHealth.innerHTML = `
+    <div class="tabTitle">HEALTH</div>
     <div class="hearts"><span class="h">❤️</span><span class="h">❤️</span><span class="h">❤️</span></div>
     <div class="meter micro" id="hud-health-meter"><div class="fill" id="hud-health-fill"></div></div>
     <div style="display:flex; justify-content:space-between; gap:10px; margin-top:6px;">
@@ -159,15 +198,18 @@ export function initHUD() {
     </div>`;
   right.appendChild(tHealth);
 
+  // RIGHT: Score
   const tScore = document.createElement('div');
   tScore.className = 'tile compact';
   tScore.innerHTML = `<div class="tabTitle">SCORE</div>
     <div style="font-size:16px;color:#fff;text-shadow:1px 1px 0 #000" id="hud-score-text">0</div>`;
   right.appendChild(tScore);
 
+  // RIGHT: Beam/Heat
   const tBeam = document.createElement('div');
   tBeam.className = 'tile compact';
-  tBeam.innerHTML = `<div class="tabTitle">BEAM</div>
+  tBeam.innerHTML = `
+    <div class="tabTitle">BEAM</div>
     <div class="meter heat" id="hud-heat-meter"><div class="fill" id="hud-heat-fill"></div></div>
     <div style="display:flex; gap:6px; margin-top:6px; justify-content:space-between;">
       <span class="badge" id="hud-heat-text" title="heat">0%</span>
@@ -175,8 +217,7 @@ export function initHUD() {
     </div>`;
   right.appendChild(tBeam);
 
-
-    // --- Controls Keycaps (bottom-right): 4 tastierini separati ---
+  // Bottom-center: keycaps
   const keys = document.createElement('div');
   keys.id = 'hud-keys';
   keys.innerHTML = `
@@ -196,57 +237,34 @@ export function initHUD() {
       <span class="k">F3</span><small>debug</small>
     </button>
   `;
-  Object.assign(keys.style,{
-    position:'fixed',
-    left:'50%',               // centrato
-    right:'auto',
-    bottom:'40px',
-    transform:'translateX(-50%)', // centrato
-    zIndex:10001,
-    display:'flex',
-    gap:'8px',
-    alignItems:'center',
-    pointerEvents:'auto'
+  Object.assign(keys.style, {
+    position: 'fixed',
+    left: '50%',
+    bottom: '40px',
+    transform: 'translateX(-50%)',
+    zIndex: 10001,
+    display: 'flex',
+    gap: '8px',
+    alignItems: 'center',
+    pointerEvents: 'auto'
   });
   document.body.appendChild(keys);
 
-  // stile dei keycaps
-  if (!document.getElementById('hud-style-keycaps')) {
-    const cs = document.createElement('style'); cs.id='hud-style-keycaps';
-    cs.textContent = `
-      .keycap{
-        width:56px;height:56px;border:0;border-radius:12px;cursor:pointer;
-        color:#e8f1ff;background:#1f2a3aee;backdrop-filter:blur(4px);
-        box-shadow:0 10px 24px #0009, inset 0 1px 0 #ffffff22;
-        display:flex;flex-direction:column;align-items:center;justify-content:center;
-      }
-      .keycap .k{font-weight:800;font-size:18px;line-height:1;margin-bottom:2px}
-      .keycap small{font-size:10px;opacity:.8;letter-spacing:.2px}
-      .keycap.key-accent{background:#17445fee}
-      .keycap.on{box-shadow:0 0 14px #22f3, inset 0 1px 0 #ffffff33; background:#216a8bee}
-      #hud-keys .keycap:active{ transform:translateY(1px); }
-    `;
-    document.head.appendChild(cs);
-  }
+  /* =========================== INDICATORS =========================== */
 
-
-
-
-
-
-  // Offscreen indicators
-  const indicLayer = document.createElement('div'); indicLayer.id='indicator-layer'; document.body.appendChild(indicLayer);
+  // Offscreen indicators (pooled)
+  const indicLayer = document.createElement('div'); indicLayer.id = 'indicator-layer'; document.body.appendChild(indicLayer);
   const indicPool = [];
-  function _getIndicEl(){
-    for (const it of indicPool) if (!it.busy){ it.busy = true; it.el.style.display='block'; return it; }
+  function _getIndicEl() {
+    for (const it of indicPool) if (!it.busy) { it.busy = true; it.el.style.display = 'block'; return it; }
     const el = document.createElement('div'); el.className = 'indic info';
-    const arrow = document.createElement('div'); arrow.className='arrow'; el.appendChild(arrow);
+    const arrow = document.createElement('div'); arrow.className = 'arrow'; el.appendChild(arrow);
     indicLayer.appendChild(el);
-    const rec = { el, arrow, busy:true }; indicPool.push(rec); return rec;
+    const rec = { el, arrow, busy: true }; indicPool.push(rec); return rec;
   }
-  function _releaseAll(){ for (const it of indicPool){ it.busy=false; it.el.style.display='none'; } }
+  function _releaseAll() { for (const it of indicPool) { it.busy = false; it.el.style.display = 'none'; } }
 
-  // --- Totem edge indicator (ROMBO ciano)
+  // Diamond indicator for totem (edge hint)
   const totemEl = document.createElement('div');
   totemEl.id = 'totem-edge';
   totemEl.style.cssText = `
@@ -260,9 +278,10 @@ export function initHUD() {
   `;
   document.body.appendChild(totemEl);
 
-  // ---------- HANDLES ----------
+  /* ============================= HANDLES ============================ */
+
   const els = {
-    heartEls: tHealth.querySelectorAll('.hearts .h'),
+    heartEls:  tHealth.querySelectorAll('.hearts .h'),
     healthFill: document.getElementById('hud-health-fill'),
     healthText: document.getElementById('hud-health-text'),
     heatFill:   document.getElementById('hud-heat-fill'),
@@ -276,31 +295,62 @@ export function initHUD() {
     sanctSafe:  document.getElementById('hud-sanct-safe')
   };
 
-  // heat color util
-  const lerp=(a,b,t)=>a+(b-a)*t;
-  const mix=(c1,c2,t)=>'#'+[0,1,2].map(i=>Math.round(lerp(c1[i],c2[i],t)).toString(16).padStart(2,'0')).join('');
-  const blue=[32,184,255], yellow=[248,225,108], red=[255,107,107];
-  function heatColor(t){
-    t = Math.max(0, Math.min(1,t));
+  /* ============================ UTILITIES =========================== */
+
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const mixColor = (c1, c2, t) =>
+    '#' + [0, 1, 2].map(i => Math.round(lerp(c1[i], c2[i], t)).toString(16).padStart(2, '0')).join('');
+  const blue = [32, 184, 255], yellow = [248, 225, 108], red = [255, 107, 107];
+  function heatColor(t) {
+    t = clamp01(t);
     const m = 0.6;
-    return t < m ? mix(blue, yellow, t/m) : mix(yellow, red, (t-m)/(1-m));
+    return t < m ? mixColor(blue, yellow, t / m) : mixColor(yellow, red, (t - m) / (1 - m));
   }
 
-  // ---------- API ----------
-  function set(health01, heat01, score, { overheated=false, beamOn=false } = {}) {
-    const h = Math.max(0, Math.min(1, health01 ?? 1));
-    const t = Math.max(0, Math.min(1, heat01   ?? 0));
+  /* =============================== API ============================== */
 
-    // Health bar
-    els.healthFill.style.width = `${h*100}%`;
-    els.healthText.textContent = Math.round(h*100);
+  // Stato tasti (callbacks impostabili dal main)
+  const _handlers = {
+    onConePlus: null,
+    onConeMinus: null,
+    onBeamToggle: null,
+    onDayNightToggle: null,
+    onDebugToggle: null,
+  };
+  // Keycaps
+  const btnMinus = document.getElementById('key-minus');
+  const btnPlus  = document.getElementById('key-plus');
+  const btnBeam  = document.getElementById('key-beam');
+  const btnND    = document.getElementById('key-nd');
+  const icoND    = document.getElementById('key-nd-ico');
+  const btnDebug = document.getElementById('key-debug');
 
-    // Hearts
+  btnMinus.onclick = () => _handlers.onConeMinus?.();
+  btnPlus.onclick  = () => _handlers.onConePlus?.();
+  btnBeam.onclick  = () => _handlers.onBeamToggle?.();
+  btnND.onclick    = () => _handlers.onDayNightToggle?.();
+  btnDebug.onclick = () => _handlers.onDebugToggle?.();
+
+  function setControlsHandlers(h = {}) { Object.assign(_handlers, h); }
+  function setDebugActive(on) { btnDebug.classList.toggle('on', !!on); }
+  function setDayNightIcon(isNight) { icoND.textContent = isNight ? '🌙' : '☀︎'; }
+
+  // HUD principale (health, heat/beam, score)
+  function set(health01, heat01, score, { overheated = false, beamOn = false } = {}) {
+    const h = clamp01(health01 ?? 1);
+    const t = clamp01(heat01 ?? 0);
+
+    // Health bar + text
+    els.healthFill.style.width = `${Math.round(h * 100)}%`;
+    els.healthText.textContent = Math.round(h * 100);
+
+    // Hearts (3 segmenti)
     const segments = h * 3;
     const full = Math.floor(segments + 1e-6);
     const frac = segments - full;
-    els.heartEls.forEach((node, i)=>{
-      node.classList.remove('dim','off');
+    els.heartEls.forEach((node, i) => {
+      node.classList.remove('dim', 'off');
       if (i < full) {
         // pieno
       } else if (i === full && frac > 0) {
@@ -310,92 +360,65 @@ export function initHUD() {
       }
     });
 
-    // Heat
-    els.heatFill.style.width = `${t*100}%`;
-    els.heatText.textContent = `${Math.round(t*100)}%`;
+    // Heat bar + color + stato overheat
+    els.heatFill.style.width = `${Math.round(t * 100)}%`;
+    els.heatText.textContent = `${Math.round(t * 100)}%`;
     els.heatMeter.classList.toggle('over', !!overheated);
     if (!overheated) {
-      els.heatFill.style.background = (SKIN==='pixel')
-        ? `repeating-linear-gradient(90deg, ${heatColor(t)} 0 6px, ${heatColor(Math.max(0,t-0.15))} 6px 12px)`
-        : `linear-gradient(90deg, ${heatColor(t)}, ${heatColor(Math.max(0,t-0.15))})`;
+      els.heatFill.style.background = (SKIN === 'pixel')
+        ? `repeating-linear-gradient(90deg, ${heatColor(t)} 0 6px, ${heatColor(Math.max(0, t - 0.15))} 6px 12px)`
+        : `linear-gradient(90deg, ${heatColor(t)}, ${heatColor(Math.max(0, t - 0.15))})`;
     }
 
-    // Beam badge
-    if (overheated){ els.beamBadge.textContent='overheated'; els.beamBadge.className='badge over'; }
-    else if (beamOn){ els.beamBadge.textContent='on'; els.beamBadge.className='badge on'; }
-    else { els.beamBadge.textContent='off'; els.beamBadge.className='badge off'; }
+    // Beam badge + keycap highlight
+    if (overheated) {
+      els.beamBadge.textContent = 'overheated'; els.beamBadge.className = 'badge over';
+    } else if (beamOn) {
+      els.beamBadge.textContent = 'on'; els.beamBadge.className = 'badge on';
+    } else {
+      els.beamBadge.textContent = 'off'; els.beamBadge.className = 'badge off';
+    }
+    btnBeam.classList.toggle('on', !!beamOn);
 
     // Score
     els.scoreText.textContent = String(score ?? 0);
   }
 
-
-  // --- Controls handlers esposti al main ---
-  let _handlers = {
-    onConePlus:null, onConeMinus:null, onBeamToggle:null, onDayNightToggle:null, onDebugToggle:null,
-    };
-    const btnMinus = document.getElementById('key-minus');
-    const btnPlus  = document.getElementById('key-plus');
-    const btnBeam  = document.getElementById('key-beam');
-    const btnND    = document.getElementById('key-nd');
-    const icoND    = document.getElementById('key-nd-ico');
-    const btnDebug = document.getElementById('key-debug');
-
-    btnMinus.onclick = ()=> _handlers.onConeMinus?.();
-    btnPlus.onclick  = ()=> _handlers.onConePlus?.();
-    btnBeam.onclick  = ()=> _handlers.onBeamToggle?.();
-    btnND.onclick    = ()=> _handlers.onDayNightToggle?.();
-    btnDebug.onclick = ()=> _handlers.onDebugToggle?.();
-
-    function setControlsHandlers(h={}){ Object.assign(_handlers, h); }
-    // (opzionale) stato visivo ON/OFF del tasto debug
-    function setDebugActive(on){ btnDebug.classList.toggle('on', !!on); }
-    function setDayNightIcon(isNight){ icoND.textContent = isNight ? '🌙' : '☀︎'; }
-    btnDebug.onclick = ()=> _handlers.onDebugToggle?.();
-
-    // tieni allineato il keycap BEAM allo stato reale
-    const __origSet = set;
-    set = function(health01, heat01, score, opts={}){
-      __origSet(health01, heat01, score, opts);
-      btnBeam.classList.toggle('on', !!opts.beamOn);
-  };
-
-
+  // Pannello Sanctuary
   function setSanctuary(info) {
     const state = info?.state || 'idle';
-    const tIn = Math.max(0, Math.min(1, info?.t ?? 0));
+    const tIn = clamp01(info?.t ?? 0);
 
     // Barra: se DONE → azzera (pronta per il prossimo)
     const tBar = (state === 'done') ? 0 : tIn;
-    els.sanctFill.style.width = `${Math.round(tBar*100)}%`;
-    els.sanctPct.textContent  = `${Math.round(tBar*100)}%`;
+    els.sanctFill.style.width = `${Math.round(tBar * 100)}%`;
+    els.sanctPct.textContent = `${Math.round(tBar * 100)}%`;
 
     // Stato badge + glow
     els.sanctState.textContent = state;
     els.sanctState.className = `badge state ${state}`;
 
     // Colore barra coerente con stato
-    const tint = (s)=>({idle:'#3b82f6',armed:'#ef4444',purifying:'#f59e0b',done:'#10b981'}[s]||'#3b82f6');
-    els.sanctFill.style.background = (SKIN==='pixel')
+    const tint = (s) => ({ idle: '#3b82f6', armed: '#ef4444', purifying: '#f59e0b', done: '#10b981' }[s] || '#3b82f6');
+    els.sanctFill.style.background = (SKIN === 'pixel')
       ? `repeating-linear-gradient(90deg, ${tint(state)} 0 6px, ${tint(state)}cc 6px 12px)`
       : `linear-gradient(90deg, ${tint(state)}, ${tint(state)}cc)`;
 
-    // SAFE badge (resta com'era)
+    // SAFE badge + dim pannello
     els.sanctSafe?.classList.toggle('hud-hide', !(info?.safe));
-
-    // dim/bright del pannello sanctuary
     leftSanct.classList.toggle('hud-dim', !!info?.uiDim);
-
   }
 
+  // (placeholder per futuri debug toggles)
   function setDebug() {}
 
-  function setIndicators(items = []){
+  // Offscreen indicators (arrows)
+  function setIndicators(items = []) {
     _releaseAll();
-    for (const it of items){
+    for (const it of items) {
       const rec = _getIndicEl();
       rec.el.className = `indic ${it.severity || 'info'}`;
-      const a = Math.max(0, Math.min(1, it.alpha ?? 1));
+      const a = clamp01(it.alpha ?? 1);
       const s = Math.max(0.5, Math.min(1.3, it.scale ?? 1));
       const ang = (it.ang ?? 0) + Math.PI * 0.5;
       rec.el.style.opacity = a.toFixed(3);
@@ -403,16 +426,16 @@ export function initHUD() {
     }
   }
 
-  // NEW: indicatore rombo per totem
-  function setTotemIndicator(item){
-    if (!item){
+  // Indicatore rombo per totem (non esposto, ma pronto all’uso se servisse)
+  function setTotemIndicator(item) {
+    if (!item) {
       totemEl.style.left = '-9999px';
-      totemEl.style.top  = '-9999px';
+      totemEl.style.top = '-9999px';
       totemEl.style.opacity = '0';
       totemEl.style.transform = `translate(-50%,-50%) rotate(45deg) scale(1)`;
       return;
     }
-    const a = Math.max(0, Math.min(1, item.alpha ?? 1));
+    const a = clamp01(item.alpha ?? 1);
     const s = Math.max(0.5, Math.min(1.3, item.scale ?? 1));
     const ang = (item.ang ?? 0) + Math.PI * 0.25;
     totemEl.style.left = Math.round(item.x) + 'px';
@@ -421,15 +444,26 @@ export function initHUD() {
     totemEl.style.transform = `translate(-50%,-50%) rotate(${ang}rad) scale(${s})`;
   }
 
-  // defaults
-  set(1,0,0,{overheated:false,beamOn:false});
+  // Stato iniziale
+  set(1, 0, 0, { overheated: false, beamOn: false });
 
-  // helper per cambiare skin velocemente
-  window.__setHudSkin = (skin)=>{
+  // Helper: cambiare skin al volo (debug)
+  window.__setHudSkin = (skin) => {
     if (!VALID_SKINS.has(skin)) return;
     localStorage.setItem('hudSkin', skin);
     location.reload();
   };
 
-  return { root, set, setSanctuary, setDebug, setIndicators, setControlsHandlers, setDayNightIcon, setDebugActive };
+  // API pubblica (stessa della versione originale)
+  return {
+    root,
+    set,
+    setSanctuary,
+    setDebug,
+    setIndicators,
+    setControlsHandlers,
+    setDayNightIcon,
+    setDebugActive,
+    // setTotemIndicator // <- se mai servisse, basta esporlo qui
+  };
 }
