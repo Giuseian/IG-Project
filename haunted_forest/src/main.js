@@ -1,4 +1,3 @@
-// POSSIBILE INTEGRAZIONE DI CHAT 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
 // Systems & UI
@@ -21,12 +20,41 @@ const PINE_RULES = [
 ];
 const PINE_OPTIONS = { mtlUrl:'/assets/models/trees/pine.mtl', keepSourceMaps:false, scale:18, rules:PINE_RULES };
 
-/* ================== FOG: parametri globali ================== */
+/* ================== FOG: parametri globali (ESTESO) ================== */
 const INIT_FOG_DENSITY   = 4.0e-4;
 const FOG_DENSITY_MULT   = 1.5;
 const FOG_TIME_SPEED     = 0.12;
 const FOG_NOISE_STRENGTH = 0.35;
-const FOG_NEAR_BOOST     = 0.18;
+const FOG_NEAR_BOOST     = 0.25;
+
+// Height 
+const FOG_HEIGHT_FACTOR = 0.16; // 0.14 -> 0.16/0.18 per più “foschia a terra”
+
+
+// Lateral haze
+const FOG_LATERAL_BOOST  = 0.08;   // intensità della foschia laterale
+const FOG_LATERAL_RADIUS = 180.0;  // da che distanza orizzontale inizia a vedersi
+const FOG_LATERAL_HEIGHT = 22.0;   // spessore verticale dello strato (m)
+
+// Gap map (foschia più piena negli spazi tra gli alberi)
+const FOG_GAPMAP_SIZE  = 256;      // 128 o 256 vanno bene
+const FOG_GAP_MAXDIST  = 120;      // distanza oltre la quale consideriamo “spazio aperto”
+const FOG_GAP_BOOST    = 0.25;     // quanto aumentare la fog nei vuoti (0..~1.5)
+
+// Baseline e compensazioni dinamiche
+const FOG_D0 = INIT_FOG_DENSITY * FOG_DENSITY_MULT; // baseline iniziale
+let _nearMul = 1.0;   // moltiplicatore per fog vicino a terra
+let _latMul  = 1.0;   // moltiplicatore per la lateral haze
+let _fogGapTex = null;         // DataTexture (R8) 0..1 = “quanto è vuoto”
+let _fogMapST  = null;         // vec4(scaleX, scaleY, offsetX, offsetY)
+
+
+/* === Baseline & run-state (una sola fonte di verità) === */
+const BASE = { captured:false, maxAlive:7, spawnInterval:1.2 };
+let _debugCapDelta = 0;    // +cap fatto via KeyP (max +2)
+let _won = false;          // hai completato tutti i totem?
+let _sanctuaryItems0 = null; // snapshot degli spot per ricreare i totem al reset
+
 
 /* Collezione degli shader patchati per aggiornare fog uniforms */
 const _fogShaders = new Set();
@@ -57,6 +85,7 @@ float snoise(vec3 v){
 float FBM(vec3 p){ float v=0.0,a=0.5; for(int i=0;i<6;i++){ v+=a*snoise(p); p*=2.0; a*=0.5; } return v; }
 `;
 
+// === Patch chunks
 THREE.ShaderChunk.fog_pars_vertex = `
 #ifdef USE_FOG
   varying vec3 vFogWorldPos;
@@ -69,13 +98,26 @@ THREE.ShaderChunk.fog_vertex = `
 #endif
 `;
 
-// <<< Aggiunte uniform: fogTimeSpeed, fogNoise, fogNearBoost
 THREE.ShaderChunk.fog_pars_fragment = NOISE_GLSL + `
 #ifdef USE_FOG
   uniform float fogTime;
   uniform float fogTimeSpeed;
   uniform float fogNoise;
   uniform float fogNearBoost;
+
+  uniform float fogHeightFactor; 
+
+  uniform sampler2D fogGapMap;
+  uniform vec4  fogMapST;
+  uniform float fogGapBoost;
+
+  uniform float fogLateralBoost;
+  uniform float fogLateralRadius;
+  uniform float fogLateralHeight;
+
+  uniform float fogNearMul;
+  uniform float fogLateralMul;
+
   uniform vec3 fogColor;
   varying vec3 vFogWorldPos;
   #ifdef FOG_EXP2
@@ -87,31 +129,56 @@ THREE.ShaderChunk.fog_pars_fragment = NOISE_GLSL + `
 #endif
 `;
 
-// <<< Più denso, meno movimento, più “near”
 THREE.ShaderChunk.fog_fragment = `
 #ifdef USE_FOG
   vec3 fogOrigin = cameraPosition;
-  vec3 dir = normalize(vFogWorldPos - fogOrigin);
+  vec3 dir  = normalize(vFogWorldPos - fogOrigin);
   float dist = distance(vFogWorldPos, fogOrigin);
 
-  vec3 sampleP = vFogWorldPos * 0.00025 + vec3(0.0, 0.0, fogTime * fogTimeSpeed * 0.025);
-  float n = FBM(sampleP + FBM(sampleP)); n = n*0.5 + 0.5;
-  n = mix(1.0, n, clamp(fogNoise, 0.0, 1.0));
+  // Drift diagonale XZ (vento)
+  vec2 wind = normalize(vec2(0.7, 0.3));
+  vec3 sampleP = vFogWorldPos * 0.00025
+              + vec3(wind.x, 0.0, wind.y) * (fogTime * fogTimeSpeed * 0.025);
 
-  float dcurve = pow(dist, 1.2);
-  float baseExp = 1.0 - exp(-dcurve * fogDensity * (0.85 + fogNearBoost));
+  float n = FBM(sampleP + FBM(sampleP)); 
+  n = mix(1.0, n*0.5 + 0.5, clamp(fogNoise, 0.0, 1.0));
 
-  float y = dir.y; if(abs(y) < 1e-4) y = (y < 0.0 ? -1.0 : 1.0)*1e-4;
-  float heightFactor = 0.14;
-  float heightFog = heightFactor * exp(-fogOrigin.y * fogDensity) *
-                    (1.0 - exp(-dcurve * y * fogDensity)) / y;
+  // base: exp2 + height
+  float dcurve   = pow(dist, 1.2);
+  float baseExp  = 1.0 - exp(-dcurve * fogDensity * (0.85 + fogNearBoost));
+  float y = dir.y; if (abs(y) < 1e-4) y = (y < 0.0 ? -1.0 : 1.0) * 1e-4;
+  // float heightFactor = 0.14;
+  //float heightFog = heightFactor * exp(-fogOrigin.y * fogDensity) *
+  //                  (1.0 - exp(-dcurve * y * fogDensity)) / y;
+
+  float heightFog = fogHeightFactor * exp(-fogOrigin.y * fogDensity) *
+                  (1.0 - exp(-dcurve * y * fogDensity)) / y;
+
 
   float fogFactor = clamp( mix(heightFog, heightFog + baseExp*0.85, 0.8) * n, 0.0, 1.0 );
+
+  // GAP MAP: aggiunta “gentile” negli spazi aperti
+  vec2  uv  = vFogWorldPos.xz * fogMapST.xy + fogMapST.zw;
+  float gap = texture2D(fogGapMap, uv).r;
+  float gapAdd = fogGapBoost * gap * (1.0 - fogFactor);
+  fogFactor = clamp(fogFactor + gapAdd, 0.0, 1.0);
+
+  // LATERAL HAZE: foschia radente all’orizzonte
+  float distXZ       = length(vFogWorldPos.xz - fogOrigin.xz);
+  float groundFalloff= exp( -max(0.0, vFogWorldPos.y) / max(1.0, fogLateralHeight) );
+  float sideWeight   = smoothstep(32.0, max(32.0, fogLateralRadius), distXZ);
+  float lateralHaze  = fogLateralBoost * groundFalloff * sideWeight;
+  lateralHaze *= fogLateralMul;
+
+  // Soft-union per riempire senza saturare
+  fogFactor = 1.0 - (1.0 - fogFactor) * (1.0 - lateralHaze);
+  fogFactor = clamp(fogFactor, 0.0, 1.0);
+
   gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, fogFactor);
 #endif
 `;
 
-/* --- utility per applicare uniforms fogTime (e nuove uniform) a tutti i materiali --- */
+/* --- uniforms & patcher --- */
 function attachFogTo(root){
   root.traverse?.(child=>{
     const mat = child.material; if(!mat) return;
@@ -125,6 +192,27 @@ function attachFogTo(root){
         shader.uniforms.fogTimeSpeed  = { value: FOG_TIME_SPEED };
         shader.uniforms.fogNoise      = { value: FOG_NOISE_STRENGTH };
         shader.uniforms.fogNearBoost  = { value: FOG_NEAR_BOOST };
+        shader.uniforms.fogHeightFactor = { value: FOG_HEIGHT_FACTOR };
+
+        // Lateral haze
+        shader.uniforms.fogLateralBoost  = { value: FOG_LATERAL_BOOST };
+        shader.uniforms.fogLateralRadius = { value: FOG_LATERAL_RADIUS };
+        shader.uniforms.fogLateralHeight = { value: FOG_LATERAL_HEIGHT };
+        shader.uniforms.fogNearMul       = { value: 1.0 };
+        shader.uniforms.fogLateralMul    = { value: 1.0 };
+
+        // Gap map placeholders
+        if (!_fogGapTex) {
+          const placeholder = new THREE.DataTexture(new Uint8Array([0]), 1, 1, THREE.RedFormat);
+          placeholder.needsUpdate = true;
+          _fogGapTex = placeholder;
+        }
+        if (!_fogMapST) _fogMapST = new THREE.Vector4(0,0,0.5,0.5);
+
+        shader.uniforms.fogGapMap   = { value: _fogGapTex };
+        shader.uniforms.fogMapST    = { value: _fogMapST };
+        shader.uniforms.fogGapBoost = { value: FOG_GAP_BOOST };
+
         _fogShaders.add(shader);
       };
       m.needsUpdate = true;
@@ -132,15 +220,18 @@ function attachFogTo(root){
   });
 }
 
-/* ---- Day/Night smooth + auto-cycle ---- */
-const DN_FADE_SECS   = 2.5;   // durata transizione day<->night
-let _dnLerp   = 0;            // 0=giorno, 1=notte (blend corrente)
-let _dnTarget = 0;            // 0/1 verso cui andiamo
+/* ---- Auto-compensazione near/lateral quando cambi densità ---- */
+function recomputeFogComp(){
+  const d = scene?.fog?.density ?? FOG_D0;
+  const r = THREE.MathUtils.clamp(FOG_D0 / d, 0.6, 1.6);
+  _nearMul = Math.min(1.10, Math.pow(r, 0.65));  // max +10%
+  _latMul  = Math.min(1.10, Math.pow(r, 0.55));  // max +10%
 
-const HALF_CYCLE_SECS = 45;   // ogni quanti secondi invertire (se auto)
-let _cycleTimer = 0;
-let _autoCycle  = true;      // attivalo con KeyN (vedi sotto)
-
+  _fogShaders.forEach(s=>{
+    if (s.uniforms.fogNearBoost)    s.uniforms.fogNearBoost.value    = FOG_NEAR_BOOST    * _nearMul;
+    if (s.uniforms.fogLateralBoost) s.uniforms.fogLateralBoost.value = FOG_LATERAL_BOOST * _latMul;
+  });
+}
 
 /* -------- Sky Fog Dome (riempie i “buchi” tra gli alberi) -------- */
 let _skyFogDome = null;
@@ -177,12 +268,11 @@ let _occGrid = null;
 // Sanctuary
 let _hudShowDoneUntil = 0;
 
-
 // input schema: RMB = AIM, F = power toggle
 let _aimHeld = false;
 let _fireToggle = false;
 let _wispsEnabled = true;
-const ENABLE_TOTEM_EDGE = false; // <<< kill-switch globale: lasciare false
+const ENABLE_TOTEM_EDGE = false;
 let _showTotemEdge = false;
 
 // reticolo
@@ -192,6 +282,10 @@ let _reticleEl = null;
 let _frozen = false;
 
 let _tPrev = performance.now() * 0.001;
+
+// Pause Game 
+let _isPaused = false;
+let _pausedFogWasAnimating = false;
 
 // === Combat tuning ===
 const ATTACK_RADIUS = 3.2;   // m (XZ)
@@ -208,18 +302,22 @@ function createSkyFogDome(colorHex = 0xDFE9F3, radius = 18000){
   return mesh;
 }
 
-
 /* ---- Day/Night preset ---- */
+const DN_FADE_SECS   = 2.5;   // durata transizione day<->night
+let _dnLerp   = 0;            // 0=giorno, 1=notte (blend corrente)
+let _dnTarget = 0;            // 0/1 verso cui andiamo
+
+const HALF_CYCLE_SECS = 45;   // ogni quanti secondi invertire (se auto)
+let _cycleTimer = 0;
+let _autoCycle  = true;      // attivalo con KeyN (vedi sotto)
 
 function applyDayNight(night){
-  _dnTarget = night ? 1 : 0;   // non applica subito: imposta solo il target
+  _dnTarget = night ? 1 : 0;
 }
-
 
 function updateDayNight(dt){
   if (!sun || !ambient || !scene || !_skyFogDome || !renderer) return;
 
-  // avanza verso il target
   if (_dnLerp !== _dnTarget){
     const step = dt / DN_FADE_SECS;
     _dnLerp = (_dnTarget > _dnLerp)
@@ -227,16 +325,13 @@ function updateDayNight(dt){
       : Math.max(0, _dnLerp - step);
   }
 
-  // easing (smoothstep)
-  const k0 = _dnLerp;                 // 0=day -> 1=night
+  const k0 = _dnLerp;                 
   const k  = k0*k0*(3 - 2*k0);
 
-  // colori giorno/notte
   const COL_DAY   = new THREE.Color(0xDFE9F3);
   const COL_NIGHT = new THREE.Color(0x0a1220);
   const fogCol    = COL_DAY.clone().lerp(COL_NIGHT, k);
 
-  // fog + dome sempre coerenti
   scene.fog.color.copy(fogCol);
   const m = _skyFogDome.material;
   m.color.copy(fogCol);
@@ -244,17 +339,13 @@ function updateDayNight(dt){
   m.depthTest  = false;
   _skyFogDome.renderOrder = -1000;
 
-  // luci
   ambient.intensity = THREE.MathUtils.lerp(0.35, 0.18, k);
   sun.intensity     = THREE.MathUtils.lerp(1.00, 0.35, k);
-  // sole caldo di giorno, freddo di notte
   sun.color.set(0xffe6b3).lerp(new THREE.Color(0x9fbfff), k);
 
-  // esposizione + clear color (in caso tu usi il clear)
   renderer.toneMappingExposure = THREE.MathUtils.lerp(1.00, 0.90, k);
   renderer.setClearColor(fogCol.getHex(), 1);
 
-  // piccola orbita del sole (solo estetica)
   const elevDay   = THREE.MathUtils.degToRad(55);
   const elevNight = THREE.MathUtils.degToRad(-20);
   const elev = THREE.MathUtils.lerp(elevDay, elevNight, k);
@@ -266,29 +357,31 @@ function updateDayNight(dt){
   const z  = Math.sin(azim) * xz;
   sun.position.set(x, y, z);
 
-  // aggiorna icona HUD quando superi metà
   const nowNight = (k >= 0.5);
   if (nowNight !== _isNight){
     _isNight = nowNight;
     hud?.setDayNightIcon?.(_isNight);
   }
 
-  // auto-cycle opzionale
   if (_autoCycle){
     _cycleTimer += dt;
     if (_cycleTimer >= HALF_CYCLE_SECS){
       _cycleTimer = 0;
-      applyDayNight(_dnTarget < 0.5 ? true : false); // flip
+      applyDayNight(_dnTarget < 0.5 ? true : false);
     }
   }
 }
 
+// init();
+// animate();
+init().then(()=>{
+  // Pre-warm: compila gli shader con le patch già attaccate
+  renderer.compile(scene, camera);
+  animate();
+});
 
 
 
-
-init();
-animate();
 
 /* ----------------- PRNG deterministico (mulberry32) ----------------- */
 function mulberry32(seed){
@@ -350,71 +443,37 @@ function minDistToOccluders(x, z, occGrid){
   return Math.sqrt(minD2);
 }
 
-/* ---- Spots per i santuari ---- */
-function makeSanctuarySpots(count, opt = {}) {
-  const {
-    bands = [[1200,1500], [2000,2600], [3000,3800]],
-    seed  = 1337,
-    occluders = [],
-    gridCellSize = 120,
-    totemRadius = 36,
-    margin = 32,
-    minSeparation = 360,
-    radius = 100,
-    holdSeconds = 3.0,
-    tries = 3000,
-    expandStep = 260,
-    maxExpansions = 6
-  } = opt;
+/* ---- Gap map dalla griglia di occluder ---- */
+function buildFogGapMapFromOccGrid(occGrid, worldHalf = 6000, size = FOG_GAPMAP_SIZE){
+  const w = size, h = size;
+  const data = new Uint8Array(w*h);
+  let k = 0;
 
-  const rng     = mulberry32(seed);
-  const occGrid = buildOccluderGrid(occluders, gridCellSize);
-  const needClear = totemRadius + margin;
-
-  const farEnoughFromOthers = (x,z,spots)=>{
-    for (const s of spots){
-      if (Math.hypot(s.x - x, s.z - z) < minSeparation) return false;
-    }
-    return true;
-  };
-
-  const spots = [];
-  for (let i=0; i<count; i++){
-    let [rMin, rMax] = bands[i % bands.length];
-    let attempts = 0, expansions = 0, placed = false;
-
-    while (!placed && attempts < tries) {
-      attempts++;
-      if (attempts % 800 === 0 && expansions < maxExpansions) {
-        rMin += expandStep; rMax += expandStep; expansions++;
-      }
-
-      const t  = rng();
-      const r  = THREE.MathUtils.lerp(rMin, rMax, t);
-      const th = rng() * Math.PI * 2;
-      const x  = Math.cos(th) * r;
-      const z  = Math.sin(th) * r;
-
-      const dTree = minDistToOccluders(x, z, occGrid);
-      if (!isFinite(dTree) || dTree < needClear) continue;
-
-      if (!farEnoughFromOthers(x,z,spots)) continue;
-
-      spots.push({ x, z, radius, holdSeconds });
-      placed = true;
-    }
-
-    if (!placed){
-      const r  = THREE.MathUtils.lerp(3200, 4200, rng());
-      const th = rng() * Math.PI * 2;
-      const x  = Math.cos(th) * r;
-      const z  = Math.sin(th) * r;
-      spots.push({ x, z, radius, holdSeconds });
+  for (let j=0; j<h; j++){
+    const z = (j/(h-1))*2*worldHalf - worldHalf;
+    for (let i=0; i<w; i++){
+      const x = (i/(w-1))*2*worldHalf - worldHalf;
+      const d = minDistToOccluders(x, z, occGrid);
+      const a = FOG_GAP_MAXDIST*0.5, b = FOG_GAP_MAXDIST;
+      const t = Math.max(0, Math.min(1, (d - a)/(b - a)));
+      data[k++] = Math.round(t*255);
     }
   }
 
-  console.log('[Sanctuaries seeded by bands]', { seed, bands, found: spots.length });
-  return spots;
+  const tex = new THREE.DataTexture(data, w, h, THREE.RedFormat, THREE.UnsignedByteType);
+  tex.needsUpdate = true;
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+
+  _fogGapTex = tex;
+  _fogMapST  = new THREE.Vector4( 1/(2*worldHalf), 1/(2*worldHalf), 0.5, 0.5 );
+
+  _fogShaders.forEach(s=>{
+    if (s.uniforms.fogGapMap)   s.uniforms.fogGapMap.value   = _fogGapTex;
+    if (s.uniforms.fogMapST)    s.uniforms.fogMapST.value    = _fogMapST;
+    if (s.uniforms.fogGapBoost) s.uniforms.fogGapBoost.value = FOG_GAP_BOOST;
+  });
 }
 
 /* ----------------- OVERLAYS (GO/Win) ----------------- */
@@ -451,8 +510,6 @@ function hideOverlay(){
   _overlayEl = null;
 }
 
-
-
 function showOverlay({ title, text, primary, secondary }){
   ensureOverlayCSS();
   hideOverlay();
@@ -486,9 +543,45 @@ function showGameOverOverlay(){
   });
 }
 
+function pauseGame(){
+  if (_isPaused || _frozen) return;
+  _isPaused = true;
+
+  _pausedFogWasAnimating = animateFog;
+  animateFog = false;
+  spawner?.pauseAggro?.(true);
+
+  _frozen = true;
+  showOverlay({
+    title: 'Paused',
+    text:  'Game paused.',
+    primary:  { label:'Resume', onClick: resumeGame },
+    secondary:{ label:'Retry',  onClick: resetGame }
+  });
+}
+
+function resumeGame(){
+  // Se sei arrivatə al win, "Resume" equivale a iniziare un nuovo run
+  if (_won) { resetGame(); return; }
+
+  if (!_isPaused) return;
+  hideOverlay();
+  _isPaused = false;
+  _frozen = false;
+
+  animateFog = true;
+  spawner?.pauseAggro?.(false);
+
+  _tPrev = performance.now() * 0.001;
+  renderer?.domElement?.requestPointerLock?.();
+}
+
 
 function showWinOverlay(){
+  _won = true;                    // <- segnalo che hai vinto
   _frozen = true;
+  animateFog = false;
+  spawner?.pauseAggro?.(true);    // niente più spawn mentre sei nel win overlay
   showOverlay({
     title: 'All Totems Purified!',
     text:  'The forest grows quiet. Play again?',
@@ -499,13 +592,13 @@ function showWinOverlay(){
 
 window.showWinOverlay = showWinOverlay;
 
-/* ---------------- init ---------------- */
+
 async function init(){
   scene = new THREE.Scene();
-  // scene.background = new THREE.Color(0x87a0c0);
   scene.background = null; // DOME
 
   scene.fog = new THREE.FogExp2(0xDFE9F3, INIT_FOG_DENSITY * FOG_DENSITY_MULT);
+  recomputeFogComp();
 
   camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 20000);
   camera.position.set(0, 20, 120);
@@ -524,9 +617,8 @@ async function init(){
   // Sky Fog Dome
   _skyFogDome = createSkyFogDome(scene.fog.color.getHex(), 18000);
   scene.add(_skyFogDome);
-  attachFogTo(_skyFogDome);
 
-  // Luci (mutabili per day/night)
+  // Luci
   ambient = new THREE.AmbientLight(0xffffff, 0.35);
   scene.add(ambient);
 
@@ -534,7 +626,6 @@ async function init(){
   sun.position.set(60, 120, 80);
   sun.castShadow = true;
   scene.add(sun);
-
 
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(20000, 20000),
@@ -544,22 +635,31 @@ async function init(){
   ground.receiveShadow = true;
   scene.add(ground);
 
+  // === PRE-RENDER “ANTI-NERO” ===
+  // Applica la palette giorno base e dipingi subito un frame placeholder,
+  // così l’utente vede già il cielo nebbioso mentre il resto carica.
+  applyDayNight(false);
+  updateDayNight(0);
+  renderer.setClearColor(scene.fog.color.getHex(), 1);
+  renderer.clear(true, true, true);
+  renderer.render(scene, camera);
+
+  // Da qui in poi può esserci attesa (await): nessun buco nero sul canvas.
+  attachFogTo(_skyFogDome);
+  attachFogTo(scene);
+
   // --- HUD ---
   hud = initHUD();
-  // icona corretta all’avvio
   hud.setDayNightIcon(_isNight);
-
-  // Controlla i tastierini 
   hud.setControlsHandlers({
-  onConeMinus: ()=> beamSystem?.decHalfAngle?.(1),
-  onConePlus:  ()=> beamSystem?.incHalfAngle?.(1),
-  onBeamToggle:()=>{ _fireToggle = !_fireToggle; },
-  onDayNightToggle:()=> { applyDayNight(!_isNight); }, // << rimuovi la setDayNightIcon qui
-  onDebugToggle:()=>{ _showDebug = !_showDebug; if (debugEl) debugEl.style.display = _showDebug ? 'block' : 'none'; }
+    onConeMinus: ()=> beamSystem?.decHalfAngle?.(1),
+    onConePlus:  ()=> beamSystem?.incHalfAngle?.(1),
+    onBeamToggle:()=>{ _fireToggle = !_fireToggle; },
+    onDayNightToggle:()=> { applyDayNight(!_isNight); },
+    onDebugToggle:()=>{ _showDebug = !_showDebug; if (debugEl) debugEl.style.display = _showDebug ? 'block' : 'none'; }
   });
 
-
-  // Reticolo (mirino)
+  // Reticolo
   _reticleEl = document.createElement('div');
   _reticleEl.id = 'reticle';
   _reticleEl.style.cssText = `
@@ -602,71 +702,94 @@ async function init(){
   addEventListener('keydown',   (e)=>{
     const code = e.code;
     if (code === 'KeyF') { _fireToggle = !_fireToggle; e.preventDefault(); }
-    if (code === 'KeyH'){                    
-      _showDebug = !_showDebug;
-      if (debugEl) debugEl.style.display = _showDebug ? 'block' : 'none';
-      e.preventDefault();
-    }
-    if (code === 'F3'){                      // alias
-      _showDebug = !_showDebug;
-      if (debugEl) debugEl.style.display = _showDebug ? 'block' : 'none';
+    if (code === 'KeyH'){ _showDebug = !_showDebug; if (debugEl) debugEl.style.display = _showDebug ? 'block' : 'none'; e.preventDefault(); }
+    if (code === 'F3'){   _showDebug = !_showDebug; if (debugEl) debugEl.style.display = _showDebug ? 'block' : 'none'; e.preventDefault(); }
+
+    if (code === 'KeyP') {
+      if (!spawner?.params) return;
+
+      const info     = spawner?.debugInfo?.();
+      const alive    = info?.alive ?? (spawner?.active?.length ?? 0);
+      const cap      = spawner.params.maxAlive ?? BASE.maxAlive;
+      const poolMax  = spawner.params.poolSize ?? Infinity;
+
+      // SE e SOLO SE sei al cap, aumenta temporaneamente il cap per debug
+      if (alive >= cap) {
+        _debugCapDelta = Math.min(_debugCapDelta + 1, 2); // (limita il +cap a +2)
+        spawner.params.maxAlive = Math.min(poolMax, BASE.maxAlive + _debugCapDelta);
+        console.log(`[P] cap pieno ${alive}/${cap} → cap temp = ${spawner.params.maxAlive} (base ${BASE.maxAlive}, delta ${_debugCapDelta})`);
+      } else {
+        console.log(`[P] cap NON pieno ${alive}/${cap} → niente aumento cap`);
+      }
+
+      // In ogni caso, prova a spawnare ora
+      spawner?.forceSpawnNow?.();
       e.preventDefault();
     }
 
-    if (code === 'KeyP') spawner?.forceSpawnNow?.();
+
+
     if (code === 'KeyV') spawner?.toggleAntiPopIn?.();
     if (code === 'KeyC') spawner?.cleanseAll?.();
     if (code === 'KeyX') spawner?.cleanseNearest?.(camera.position);
 
-    if (code === 'Comma')  { beamSystem?.decHalfAngle(1); e.preventDefault(); }
-    if (code === 'Period') { beamSystem?.incHalfAngle(1); e.preventDefault(); }
-    if (code === 'Digit9') { beamSystem?.decRange(10);    e.preventDefault(); }
-    if (code === 'Digit0') { beamSystem?.incRange(10);    e.preventDefault(); }
+    // Cono del beam
+    if (!e.ctrlKey && (
+          e.code === 'Comma' || e.key === ',' ||
+          e.code === 'Minus' || e.key === '-' ||
+          e.code === 'NumpadSubtract'
+        )) { beamSystem?.decHalfAngle(1); e.preventDefault(); }
+
+    if (!e.ctrlKey && (
+          e.code === 'Period' || e.key === '.' ||
+          e.code === 'Equal'  || e.key === '+' ||
+          e.code === 'NumpadAdd'
+        )) { beamSystem?.incHalfAngle(1); e.preventDefault(); }
+
+    // Raggio del beam
+    if (code === 'Digit9') { beamSystem?.decRange(10); e.preventDefault(); }
+    if (code === 'Digit0') { beamSystem?.incRange(10); e.preventDefault(); }
 
     if (code === 'KeyQ') { const snap = e.shiftKey ? Math.PI : Math.PI/4; playerCtl?.addYaw(+snap); e.preventDefault(); }
     if (code === 'KeyE') { playerCtl?.addYaw(-Math.PI/4); e.preventDefault(); }
 
-    if (code === 'KeyW') {
-      _wispsEnabled = !_wispsEnabled;
-      wisps?.setEnabled(_wispsEnabled);
-    }
     if (code === 'KeyG' && ENABLE_TOTEM_EDGE) {
       _showTotemEdge = !_showTotemEdge;
       hud?.setTotemIndicator?.(null);
       e.preventDefault();
     }
-    // Fog density ([ / ])
-    if (code === 'BracketLeft')  {
+
+    if (code === 'F9' || code === 'KeyB'){
+      if (_isPaused) resumeGame(); else if (!_frozen) pauseGame();
+      e.preventDefault();
+    }
+
+    // Fog density [ ] (Shift = step maggiore)
+    if (e.key === '[' || e.key === '{') {
       const k = e.shiftKey ? 1/1.25 : 1/1.12;
       scene.fog.density = Math.max(0, scene.fog.density * k);
+      recomputeFogComp();
       e.preventDefault();
     }
-    if (code === 'BracketRight') {
+    if (e.key === ']' || e.key === '}') {
       const k = e.shiftKey ? 1.25 : 1.12;
       scene.fog.density = Math.min(1, scene.fog.density * k);
-      e.preventDefault();
-    }
-    // Manteniamo M per animazione fog (come prima)
-    if (code === 'KeyM'){                    // M: notte/giorno (optional)
-      applyDayNight(!_isNight);
-      // hud.setDayNightIcon(_isNight);
-      e.preventDefault();
-    }
-    
-    // Se vuoi anche un tasto per notte/giorno, puoi usare ad es. KeyN:
-    if (code === 'KeyN') {             // N = auto day/night ON/OFF
-      _autoCycle = !_autoCycle;
-      _cycleTimer = 0;                 // riparti da zero
-      console.log('[Day/Night] auto-cycle', _autoCycle ? 'ON' : 'OFF');
+      recomputeFogComp();
       e.preventDefault();
     }
 
+    // Toggle animazione fog
+    if (code === 'KeyK'){ animateFog = !animateFog; console.log('[Fog] animate:', animateFog ? 'ON' : 'OFF'); e.preventDefault(); }
+
+    // Day/Night
+    if (code === 'KeyM'){ applyDayNight(!_isNight); e.preventDefault(); }
+    if (code === 'KeyN'){ _autoCycle = !_autoCycle; _cycleTimer = 0; console.log('[Day/Night] auto-cycle', _autoCycle ? 'ON' : 'OFF'); e.preventDefault(); }
   });
 
-  // Nebbia → materiali (aggiunge uniform)
+  // Nebbia → materiali (aggiunge uniform alle mesh già presenti)
   attachFogTo(scene);
 
-  // --- forest + altezza tipica pino
+  // --- forest + altezza tipica pino (await pesante)
   const env = await setupForest(scene);
   attachFogTo(scene);
 
@@ -687,92 +810,65 @@ async function init(){
 
   // ---------------- GHOST SPAWNER ----------------
   const getFocusPos = () => new THREE.Vector3().copy(camera.position);
-
   spawner = new GhostSpawner({
-    scene,
-    camera,
-    getGroundY,
-    getFocusPos,
-
-    poolSize: 40,
-    maxAlive: 7,
-    spawnInterval: 1.2,
-
-    minR: 140,
-    maxR: 260,
-    minPlayerDist: 60,
-    minSeparation: 40,
-
-    spawnMode: 'mix',
-    sectorHalfAngleDeg: 90,
+    scene, camera, getGroundY, getFocusPos,
+    poolSize: 40, maxAlive: 7, spawnInterval: 1.2,
+    minR: 140, maxR: 260, minPlayerDist: 60, minSeparation: 40,
+    spawnMode: 'mix', sectorHalfAngleDeg: 90,
     mixWeights: { front: 0.25, behind: 0.25, left: 0.25, right: 0.25 },
     antiPopIn : true,
-
     ghostOpts: {
       url: '/assets/models/ghost/ghost.glb',
-
       targetHeight: env.pineTypicalHeight * 0.10,
       scaleJitter: 0.28,
       opacityBody: 0.78,
-
-      speed: 14.0,
-      burstMultiplier: 1.6,
-
-      keepDistance: 0.0,
-      arriveRadius: 1.2,
-
+      speed: 14.0, burstMultiplier: 1.6,
+      keepDistance: 0.0, arriveRadius: 1.2,
       yawRateDeg: 720,
-
       swoop: { far: 120, near: 55, hLow: 1.6, hHigh: 60.0, yLerp: 3.2 },
-
       weave: { amp: 0.9, omega: 0.9, fadeNear: 8, fadeFar: 90, enabled: true },
-
       hardLockDist: 60,
-
-      idleWeaveAmp: 0.35,
-      idleWeaveOmega: 1.5
+      idleWeaveAmp: 0.35, idleWeaveOmega: 1.5
     },
-
     protectSeconds: 1.0
   });
 
   spawner.onGhostCleansed = () => { _scoreFloat += 25; };
 
+  let _baseMaxAlive = 0;
+  let _baseSpawnInterval = 0;
   await spawner.init();
+  // Cattura la baseline UNA volta
+  if (!BASE.captured) {
+    BASE.maxAlive      = spawner.params.maxAlive;
+    BASE.spawnInterval = spawner.params.spawnInterval;
+    BASE.captured      = true;
+  }
   if (spawner.pauseAggro) spawner.pauseAggro(false);
 
   // ===== BEAM SYSTEM (GIMBAL) =====
   beamSystem = new BeamSystem({
-    scene,
-    camera,
+    scene, camera,
     halfAngleDeg: 20,
     maxRange: spawner.params.maxR,
     exposureRate: 4.2,
     smoothTau: 0.12,
-    yawLimitDeg: 35,
-    pitchLimitDeg: 25,
-    sensX: 0.0018,
-    sensY: 0.0016,
+    yawLimitDeg: 35, pitchLimitDeg: 25,
+    sensX: 0.0018, sensY: 0.0016,
     recenterTau: 0.22
   });
   window.beamSystem = beamSystem;
 
   // ===== WISPS =====
   wisps = new WispSystem({
-    scene,
-    camera,
-    getGroundY,
-    max: 700,
-    windAmp: 1.2,
-    windFreq: 0.06,
-    windSpeed: 0.45,
-    lift: 0.75,
-    drag: 0.9
+    scene, camera, getGroundY,
+    max: 700, windAmp: 1.2, windFreq: 0.06, windSpeed: 0.45, lift: 0.75, drag: 0.9
   });
   window.wisps = wisps;
 
-  // ====== GRID per collisione camera & generazione totem ======
+  // ====== GRID per collisione camera & gap map ======
   _occGrid = buildOccluderGrid(forest.occluders, 120);
+  buildFogGapMapFromOccGrid(_occGrid, 6000, FOG_GAPMAP_SIZE);
 
   // ===== SANCTUARIES =====
   const TOTEM_COUNT = 3;
@@ -791,17 +887,14 @@ async function init(){
     maxExpansions: 6
   });
 
+  _sanctuaryItems0 = items.map(s => ({ ...s }));  // snapshot per ricreare allo stesso modo al reset
+
   sanctuaries = new SanctuarySystem({
     scene, camera,
-    beamSystem,
-    spawner,
+    beamSystem, spawner,
     modelUrl: '/assets/models/totem/new_totem.fbx',
     items,
-    decayRate: 0.12,
-    entryPad: 10.0,
-    purifyGrace: 0.9,
-    aimStick: 0.35,
-
+    decayRate: 0.12, entryPad: 10.0, purifyGrace: 0.9, aimStick: 0.35,
     onBeamTint: (hexOrNull)=>{
       const target = (hexOrNull != null) ? hexOrNull : 0xcff2ff;
       if (beam) beam.color.setHex(target);
@@ -811,38 +904,41 @@ async function init(){
         _reticleEl.style.boxShadow   = '0 0 6px ' + hexStr;
       }
     },
-
     onPurified: (idx, totalDone, totalCount)=>{
       _scoreFloat += 150;
       player.health = Math.min(1.0, player.health + 0.25);
 
       if (spawner?.params) {
-        spawner.params.maxAlive += 1;
-        spawner.params.spawnInterval *= 0.9;
+        spawner.params.maxAlive      = BASE.maxAlive;
+        spawner.params.spawnInterval = BASE.spawnInterval;
       }
-      if (scene.fog) scene.fog.density *= 1.07;
 
-      // <<< NEW: mostra "done" forte per ~2.5s
+
+      if (scene.fog) {
+        scene.fog.density *= 1.07;
+        recomputeFogComp();
+      }
+
       _hudShowDoneUntil = performance.now() * 0.001 + 2.5;
-
       if (totalDone === totalCount) showWinOverlay();
     }
   });
 
   await sanctuaries.init();
-  // --- aggiungi i totem alla griglia collisione camera
+
+  // aggiungi i totem alla griglia e rigenera gap map includendo i totem
   {
     const totemOccs = sanctuaries.getOccluders?.() || [];
     const allOccs = forest.occluders.concat(totemOccs);
     _occGrid = buildOccluderGrid(allOccs, _occGrid ? _occGrid.cellSize : 120);
+    buildFogGapMapFromOccGrid(_occGrid, 6000, FOG_GAPMAP_SIZE);
   }
 
   setupDebug(beamTargetObj);
   addEventListener('resize', onResize);
 
-  // Assicura preset Day/Night iniziale
-  applyDayNight(false);  // target: giorno
-  updateDayNight(0);     // applica subito lo stato iniziale
+  // Optional compila shader/materiali per il primo frame fluido
+  renderer.compile(scene, camera);
 }
 
 async function setupForest(scene){
@@ -896,7 +992,10 @@ function animate(){
     s.uniforms.fogTime.value      = animateFog ? tNow : 0.0;
     if (s.uniforms.fogTimeSpeed)  s.uniforms.fogTimeSpeed.value = FOG_TIME_SPEED;
     if (s.uniforms.fogNoise)      s.uniforms.fogNoise.value     = FOG_NOISE_STRENGTH;
-    if (s.uniforms.fogNearBoost)  s.uniforms.fogNearBoost.value = FOG_NEAR_BOOST;
+
+    // Boost coerenti con la densità corrente
+    if (s.uniforms.fogNearBoost)    s.uniforms.fogNearBoost.value    = FOG_NEAR_BOOST    * _nearMul;
+    if (s.uniforms.fogLateralBoost) s.uniforms.fogLateralBoost.value = FOG_LATERAL_BOOST * _latMul;
   });
 
   if (_frozen) {
@@ -997,17 +1096,15 @@ function animate(){
     { overheated: player.overheated, beamOn: activeBeam }
   );
 
-  // HUD Sanctuary
-  // HUD Sanctuary (contestuale, effimero su "done", poi dim e preferisci incompleto)
+  // HUD Sanctuary (contestuale con “done” effimero)
   let hudInfo = sanctuaries?.getNearestInfo(camera.position) || null;
   if (hudInfo) {
     const near = hudInfo.dist <= (hudInfo.radius + sanctuaries.entryPad);
     let uiDim = !(near && (hudInfo.state === 'armed' || hudInfo.state === 'purifying'));
 
-    // se il più vicino è "done": mostra per 2.5s, poi sposta il focus su un incompleto (se c'è)
     if (hudInfo.state === 'done') {
       if (tNow <= _hudShowDoneUntil) {
-        uiDim = false; // celebra a piena intensità
+        uiDim = false;
       } else {
         const inc = sanctuaries.getNearestIncomplete?.(camera.position);
         if (inc) {
@@ -1015,12 +1112,11 @@ function animate(){
           const near2 = inc.dist <= (inc.radius + sanctuaries.entryPad);
           uiDim = !(near2 && (inc.state === 'armed' || inc.state === 'purifying'));
         } else {
-          uiDim = true; // tutto done → pannello dim
+          uiDim = true;
         }
       }
     }
 
-    // passiamo anche "safe" (opzionale) per il badge SAFE
     hudInfo = {
       ...hudInfo,
       uiDim,
@@ -1030,14 +1126,13 @@ function animate(){
 
   if (hud.setSanctuary) hud.setSanctuary(hudInfo);
 
-
   // Off-screen indicators (ghosts)
   if (hud.setIndicators) {
     const show = !(spawner?.isAggroPaused?.());
     hud.setIndicators( show ? buildOffscreenIndicators(camera, spawner, { max: 4, marginPx: 28 }) : [] );
   }
 
-  // Totem edge indicator (disabilitato via kill-switch)
+  // Totem edge indicator (kill-switch off)
   if (hud.setTotemIndicator) {
     if (ENABLE_TOTEM_EDGE && _showTotemEdge) {
       const item = buildTotemIndicator(camera, sanctuaries, { marginPx: 28 });
@@ -1086,14 +1181,18 @@ function setupDebug(beamTargetObj){
     position:fixed; left:8px; bottom:8px; z-index:9998;
     color:#dfe8f3; background:#0008; padding:6px 8px; border-radius:6px;
     font:12px/1.35 monospace; user-select:none; pointer-events:none; white-space:pre;`;
-  debugEl.style.display = 'none'; // nascosto di default
+  debugEl.style.display = 'none';
   document.body.appendChild(debugEl);
 
   addEventListener('keydown', (e)=>{
+    if (!e.ctrlKey) return;
     switch(e.code){
-      case 'Minus':        renderer.toneMappingExposure = Math.max(0.2, renderer.toneMappingExposure - 0.05); break;
-      case 'Equal':        renderer.toneMappingExposure = Math.min(3.0, renderer.toneMappingExposure + 0.05); break;
-      default: break;
+      case 'Minus':
+        renderer.toneMappingExposure = Math.max(0.2, renderer.toneMappingExposure - 0.05);
+        break;
+      case 'Equal':
+        renderer.toneMappingExposure = Math.min(3.0, renderer.toneMappingExposure + 0.05);
+        break;
     }
   });
 
@@ -1268,13 +1367,8 @@ function resolveCameraCollision(pos, grid, opt = {}){
   }
 }
 
-
-
 function updateDebug(spStats = {}){
   if(!debugEl) return;
-  const heatPct = Math.round(player.heat*100);
-  const beamState = player.overheated ? 'OVERHEATED' : (_fireToggle ? 'ON' : 'OFF');
-
   const alive = spStats.alive ?? 0;
   const maxA  = spStats.maxAlive ?? 0;
   const aggro = spStats.aggroPaused ? 'PAUSED' : 'ON';
@@ -1282,58 +1376,25 @@ function updateDebug(spStats = {}){
   const cone  = window.beamSystem?.halfAngleDeg ?? '-';
   const range = window.beamSystem?.maxRange ?? '-';
 
-//   debugEl.innerHTML =
-//     `Fog: ${scene.fog?.density.toExponential?.(2)}  |  ` +
-//     `Exposure: ${renderer.toneMappingExposure.toFixed?.(2)}  |  ` +
-//     `Spawner: ${alive}/${maxA} (aggro:${aggro})  |  ` +
-//     `Beam: ${beamState}  cone:${cone}°  range:${range}  |  ` +
-//     `Wisps:${_wispsEnabled?'ON':'OFF'}`;
-// }
-
-debugEl.innerHTML =
+  debugEl.innerHTML =
     `Spawner: ${alive}/${maxA} (aggro:${aggro})  |  ` +
-    ` P:spawn, V:antiPopIn, ,/. angle, 9/0 range, Q/E snap, Shift+Q 180°, W: wisps, [/] fog, M: fog anim)`;
-} 
-
-//   debugEl.innerHTML =
-//       `Fog: ${scene.fog?.density}  |  ` +
-//       `Animate Fog ${animateFog?'ON':'OFF'}${spLine}${beamInfo}  |  ` +
-//       `Spawner: ${alive}/${maxA} (aggro:${aggro})  |  ` +
-//       `Beam: ${beamState}  cone:${cone}°  range:${range}  |  ` +
-//       `Wisps:${_wispsEnabled?'ON':'OFF'}` +
-//       `P:spawn, V:antiPopIn, ,/. angle, 9/0 range, Q/E snap, Shift+Q 180°, W: wisps, [/] fog, M: fog anim)`
-// }
+    ` P:spawn (+cap se pieno, max +2), -/+ (or ,/.) cone, Q/E snap, Shift+Q 180°, [/] fog, M: day/night, K: fog anim, F9/B : Break)`;
+}
 
 
-// Previous Update Debug 
-// function updateDebug(spStats = {}){
-//   if(!debugEl) return;
-//   const heatPct = Math.round(player.heat*100);
-//   const beamState = player.overheated ? 'OVERHEATED' : (_fireToggle ? 'ON' : 'OFF');
-
-//   const spLine =
-//     ` | spawner: alive=${spStats.alive ?? 0}/${spStats.maxAlive ?? 0}` +
-//     ` pool=${spStats.pool ?? 0} next=${(spStats.nextIn ?? 0).toFixed?.(2) ?? '0.00'}` +
-//     ` mode=${spStats.mode ?? '-'} anti=${spStats.antiPopIn ? 'on' : 'off'}` +
-//     ` aggro:${spStats.aggroPaused ? 'PAUSED' : 'on'}`;
-
-//   const beamInfo = window.beamSystem
-//     ? ` | cone:${window.beamSystem.halfAngleDeg}° range:${window.beamSystem.maxRange} hits:${window.beamSystem.hitsThisFrame}`
-//     : '';
-
-//   debugEl.innerHTML =
-//     `FogExp2+FBM density: ${scene.fog?.density.toExponential(2)}  |  ` +
-//     `Exposure: ${renderer.toneMappingExposure.toFixed(2)}  |  ` +
-//     `shaders:${_fogShaders.size}  |  anim:${animateFog?'ON':'OFF'}${spLine}${beamInfo} | Wisps:${_wispsEnabled?'ON':'OFF'}\n` +
-//     `Heat: ${player.overheated?'<span style="color:#ff6b6b">'+heatPct+'%</span>':heatPct+'%'}  ` +
-//     `| Beam: ${beamState}  (H: help, F3: debug | RMB: AIM | F: power | P:spawn, V:antiPopIn, C:cleanse all, X:nearest, ,/. angle, 9/0 range, Q/E snap, Shift+Q 180°, W: wisps, [/] fog, M: fog anim)`;
-// }
-
-/* --------- Reset (Retry/Replay) --------- */
-function resetGame(){
+async function resetGame(){
   hideOverlay();
-  _frozen = false;
 
+  // Flag di stato
+  _won       = false;
+  _isPaused  = false;
+  _frozen    = false;
+
+  // --- Stop tutto mentre resettiamo
+  try { spawner?.pauseAggro?.(true); } catch(e){}
+  animateFog = true;
+
+  // --- Player/UI ---
   player.health = 1.0;
   player.heat = 0.0;
   player.overheated = false;
@@ -1341,22 +1402,607 @@ function resetGame(){
   player.score = 0;
   _fireToggle = false;
   _aimHeld = false;
-
+  _hudShowDoneUntil = 0;
   _showTotemEdge = false;
+  hud?.setTotemIndicator?.(null);
 
+  // --- Camera/beam ---
   playerCtl?.resetPose({ x: 0, z: 120, y: null, yaw: 0, pitch: 0, zeroVel: true });
   beamSystem?.reset?.();
 
-  spawner?.reset?.();
-  sanctuaries?.resetAll?.();
+  // --- Ghost spawner: pulizia dura + baseline
+  try { spawner?.clearDefenseHotspot?.(); } catch(e){}
+  try { spawner?.cleanseAll?.(); } catch(e){}
+  try { spawner?.reset?.(); } catch(e){}
+  if (spawner?.params){
+    spawner.params.maxAlive      = BASE.maxAlive;
+    spawner.params.spawnInterval = BASE.spawnInterval;
+  }
+  _debugCapDelta = 0; // azzera il delta di debug
 
+  // --- Wisps
   _wispsEnabled = true;
   wisps?.setEnabled(true);
   wisps?.clear?.();
 
-  if (scene?.fog) scene.fog.density = INIT_FOG_DENSITY;
-  hud?.setTotemIndicator?.(null);
-} 
+  // --- Fog baseline + uniform coerenti
+  if (scene?.fog) scene.fog.density = FOG_D0;
+  _nearMul = 1.0;
+  _latMul  = 1.0;
+  recomputeFogComp();
+  _fogShaders.forEach(s=>{
+    if (s.uniforms?.fogHeightFactor) s.uniforms.fogHeightFactor.value = FOG_HEIGHT_FACTOR;
+  });
+
+  // --- Day/Night: riparti di giorno
+  _autoCycle  = true;
+  _cycleTimer = 0;
+  _dnLerp     = 0;
+  _dnTarget   = 0;
+  _isNight    = false;
+  applyDayNight(false);
+  updateDayNight(0);
+  hud?.setDayNightIcon?.(false);
+
+  // --- Ricrea i Santuari da zero (garantito: niente "verde" residuo)
+  // 1) rimuovi eventuale sistema esistente
+  if (sanctuaries){
+    try { sanctuaries.dispose?.(); } catch(e){}
+    try {
+      const grp = sanctuaries.group || sanctuaries.root || sanctuaries.object3D;
+      if (grp) scene.remove(grp);
+    } catch(e){}
+    sanctuaries = null;
+  }
+
+  // 2) ricrea con gli stessi spot iniziali
+  const items = (_sanctuaryItems0 ?? []).map(s => ({ ...s }));
+  sanctuaries = new SanctuarySystem({
+    scene, camera,
+    beamSystem, spawner,
+    modelUrl: '/assets/models/totem/new_totem.fbx',
+    items,
+    decayRate: 0.12, entryPad: 10.0, purifyGrace: 0.9, aimStick: 0.35,
+    onBeamTint: (hexOrNull)=>{
+      const target = (hexOrNull != null) ? hexOrNull : 0xcff2ff;
+      if (beam) beam.color.setHex(target);
+      if (_reticleEl){
+        const hexStr = '#'+ (target >>> 0).toString(16).padStart(6,'0');
+        _reticleEl.style.borderColor = hexStr;
+        _reticleEl.style.boxShadow   = '0 0 6px ' + hexStr;
+      }
+    },
+    onPurified: (idx, totalDone, totalCount)=>{
+      _scoreFloat += 150;
+      player.health = Math.min(1.0, player.health + 0.25);
+
+      // Dopo ogni totem, NON alteriamo i cap: restano alla baseline
+      if (spawner?.params) {
+        spawner.params.maxAlive      = BASE.maxAlive;
+        spawner.params.spawnInterval = BASE.spawnInterval;
+      }
+
+      if (scene.fog) {
+        scene.fog.density *= 1.07;
+        recomputeFogComp();
+      }
+
+      _hudShowDoneUntil = performance.now() * 0.001 + 2.5;
+      if (totalDone === totalCount) showWinOverlay();
+    }
+  });
+
+  await sanctuaries.init?.();
+
+  // 3) ricostruisci la gap map includendo i nuovi totem
+  {
+    const totemOccs = sanctuaries.getOccluders?.() || [];
+    const allOccs   = forest.occluders.concat(totemOccs);
+    _occGrid = buildOccluderGrid(allOccs, _occGrid ? _occGrid.cellSize : 120);
+    buildFogGapMapFromOccGrid(_occGrid, 6000, FOG_GAPMAP_SIZE);
+  }
+
+  // --- Riparti
+  _tPrev = performance.now() * 0.001;
+  setTimeout(()=>{ spawner?.pauseAggro?.(false); }, 50); // piccolo respiro per evitare respawn immediati
+  renderer?.domElement?.requestPointerLock?.();
+}
+
+
+/* ---- Spots per i santuari ---- */
+function makeSanctuarySpots(count, opt = {}) {
+  const {
+    bands = [[1200,1500], [2000,2600], [3000,3800]],
+    seed  = 1337,
+    occluders = [],
+    gridCellSize = 120,
+    totemRadius = 36,
+    margin = 32,
+    minSeparation = 360,
+    radius = 100,
+    holdSeconds = 3.0,
+    tries = 3000,
+    expandStep = 260,
+    maxExpansions = 6
+  } = opt;
+
+  const rng     = mulberry32(seed);
+  const occGrid = buildOccluderGrid(occluders, gridCellSize);
+  const needClear = totemRadius + margin;
+
+  const farEnoughFromOthers = (x,z,spots)=>{
+    for (const s of spots){
+      if (Math.hypot(s.x - x, s.z - z) < minSeparation) return false;
+    }
+    return true;
+  };
+
+  const spots = [];
+  for (let i=0; i<count; i++){
+    let [rMin, rMax] = bands[i % bands.length];
+    let attempts = 0, expansions = 0, placed = false;
+
+    while (!placed && attempts < tries) {
+      attempts++;
+      if (attempts % 800 === 0 && expansions < maxExpansions) {
+        rMin += expandStep; rMax += expandStep; expansions++;
+      }
+
+      const t  = rng();
+      const r  = THREE.MathUtils.lerp(rMin, rMax, t);
+      const th = rng() * Math.PI * 2;
+      const x  = Math.cos(th) * r;
+      const z  = Math.sin(th) * r;
+
+      const dTree = minDistToOccluders(x, z, occGrid);
+      if (!isFinite(dTree) || dTree < needClear) continue;
+
+      if (!farEnoughFromOthers(x,z,spots)) continue;
+
+      spots.push({ x, z, radius, holdSeconds });
+      placed = true;
+    }
+
+    if (!placed){
+      const r  = THREE.MathUtils.lerp(3200, 4200, rng());
+      const th = rng() * Math.PI * 2;
+      const x  = Math.cos(th) * r;
+      const z  = Math.sin(th) * r;
+      spots.push({ x, z, radius, holdSeconds });
+    }
+  }
+
+  console.log('[Sanctuaries seeded by bands]', { seed, bands, found: spots.length });
+  return spots;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

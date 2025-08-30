@@ -699,41 +699,14 @@ export class Ghost {
 
   /* ---------- wisps (hit + burst) ---------- */
   // RING BURNING 
-  _emitWispHit(deltaExp){
-    if (!window.wisps || deltaExp <= 0) return;
-
-    const x = this.root.position.x;
-    const z = this.root.position.z;
-    const y = this.getGroundY(x, z) + 0.12;
-
-    // colore in rampa: cyan → amber → red in base all'exposure
-    const c1 = new THREE.Color(0x33d1ff);
-    const c2 = new THREE.Color(0xffd166);
-    const c3 = new THREE.Color(0xff6b6b);
-    const t  = THREE.MathUtils.clamp(this.exposure, 0, 1);
-    const col = (t < 0.6)
-      ? c1.clone().lerp(c2, THREE.MathUtils.smoothstep(t, 0.20, 0.60))
-      : c2.clone().lerp(c3, THREE.MathUtils.smoothstep(t, 0.60, 1.00));
-
-    const center = new THREE.Vector3(x, y, z);
-    const yaw = this.yaw || 0;
-    const r   = this._ring?.radius || 2.2;
-
-    // poche particelle, ma quasi ogni frame sotto beam
-    const count = Math.max(1, Math.floor(2 + 40 * deltaExp)); // scala con quanto aumenta l'exposure
-    window.wisps.emitRing(center, yaw, r, count, {
-      up: 0.9, out: 0.6, spread: 0.35,
-      size: [0.6, 1.6],
-      life: [0.8, 1.5],
-      tint: col
-    });
-  }
-
-  // FIRE NEAR GHOST 
   // _emitWispHit(deltaExp){
   //   if (!window.wisps || deltaExp <= 0) return;
 
-  //   // colore dipende dall’exposure
+  //   const x = this.root.position.x;
+  //   const z = this.root.position.z;
+  //   const y = this.getGroundY(x, z) + 0.12;
+
+  //   // colore in rampa: cyan → amber → red in base all'exposure
   //   const c1 = new THREE.Color(0x33d1ff);
   //   const c2 = new THREE.Color(0xffd166);
   //   const c3 = new THREE.Color(0xff6b6b);
@@ -742,59 +715,86 @@ export class Ghost {
   //     ? c1.clone().lerp(c2, THREE.MathUtils.smoothstep(t, 0.20, 0.60))
   //     : c2.clone().lerp(c3, THREE.MathUtils.smoothstep(t, 0.60, 1.00));
 
-  //   // centro guaina: metà altezza del ghost
-  //   const H     = Math.max(1.0, this.targetHeight * 0.9);
-  //   const center= new THREE.Vector3(
-  //     this.root.position.x,
-  //     this.root.position.y + this.rig.position.y + H * 0.5,
-  //     this.root.position.z
-  //   );
+  //   const center = new THREE.Vector3(x, y, z);
+  //   const yaw = this.yaw || 0;
+  //   const r   = this._ring?.radius || 2.2;
 
-  //   // r più stretto del ring a terra
-  //   const rad   = Math.max(0.35, (this._ring?.radius ?? 2.2) * 0.45);
-  //   const count = Math.max(2, Math.floor(6 + 80 * deltaExp)); // scala con incremento exposure
-
-  //   window.wisps.emitSheath(center, H, rad, count, {
-  //     up: 1.2, out: 0.55, spread: 0.28,
+  //   // poche particelle, ma quasi ogni frame sotto beam
+  //   const count = Math.max(1, Math.floor(2 + 40 * deltaExp)); // scala con quanto aumenta l'exposure
+  //   window.wisps.emitRing(center, yaw, r, count, {
+  //     up: 0.9, out: 0.6, spread: 0.35,
   //     size: [0.6, 1.6],
   //     life: [0.8, 1.5],
   //     tint: col
   //   });
   // }
 
+  // FIRE NEAR GHOST 
+  _emitWispHit(deltaExp){
+    if (!window.wisps || deltaExp <= 0) return;
 
-  // RING BURNING 
-  _emitWispBurst(){
-    if (!window.wisps) return;
-    const x = this.root.position.x;
-    const z = this.root.position.z;
-    const y = this.getGroundY(x, z) + 0.18;
-    const center = new THREE.Vector3(x, y, z);
+    // colore dipende dall’exposure
+    const c1 = new THREE.Color(0x33d1ff);
+    const c2 = new THREE.Color(0xffd166);
+    const c3 = new THREE.Color(0xff6b6b);
+    const t  = THREE.MathUtils.clamp(this.exposure, 0, 1);
+    const col = (t < 0.6)
+      ? c1.clone().lerp(c2, THREE.MathUtils.smoothstep(t, 0.20, 0.60))
+      : c2.clone().lerp(c3, THREE.MathUtils.smoothstep(t, 0.60, 1.00));
 
-    window.wisps.emitBurst(center, 110, {
-      up: 2.6, out: 2.0,
-      size: [1.0, 2.6],
-      life: [1.2, 2.0],
-      tint: new THREE.Color(0xffd166)
+    // centro guaina: metà altezza del ghost
+    const H     = Math.max(1.0, this.targetHeight * 0.9);
+    const center= new THREE.Vector3(
+      this.root.position.x,
+      this.root.position.y + this.rig.position.y + H * 0.5,
+      this.root.position.z
+    );
+
+    // r più stretto del ring a terra
+    const rad   = Math.max(0.35, (this._ring?.radius ?? 2.2) * 0.45);
+    const count = Math.max(2, Math.floor(6 + 80 * deltaExp)); // scala con incremento exposure
+
+    window.wisps.emitSheath(center, H, rad, count, {
+      up: 1.2, out: 0.55, spread: 0.28,
+      size: [0.6, 1.6],
+      life: [0.8, 1.5],
+      tint: col
     });
   }
 
-  // FIRE NEAR GHOST 
+
+  // RING BURNING 
   // _emitWispBurst(){
   //   if (!window.wisps) return;
-  //   const H = Math.max(1.0, this.targetHeight * 0.9);
-  //   const center = new THREE.Vector3(
-  //     this.root.position.x,
-  //     this.root.position.y + this.rig.position.y + H * 0.5,
-  //     this.root.position.z
-  //   );
-  //   window.wisps.emitBurst(center, 140, {
+  //   const x = this.root.position.x;
+  //   const z = this.root.position.z;
+  //   const y = this.getGroundY(x, z) + 0.18;
+  //   const center = new THREE.Vector3(x, y, z);
+
+  //   window.wisps.emitBurst(center, 110, {
   //     up: 2.6, out: 2.0,
   //     size: [1.0, 2.6],
   //     life: [1.2, 2.0],
   //     tint: new THREE.Color(0xffd166)
   //   });
   // }
+
+  // FIRE NEAR GHOST 
+  _emitWispBurst(){
+    if (!window.wisps) return;
+    const H = Math.max(1.0, this.targetHeight * 0.9);
+    const center = new THREE.Vector3(
+      this.root.position.x,
+      this.root.position.y + this.rig.position.y + H * 0.5,
+      this.root.position.z
+    );
+    window.wisps.emitBurst(center, 140, {
+      up: 2.6, out: 2.0,
+      size: [1.0, 2.6],
+      life: [1.2, 2.0],
+      tint: new THREE.Color(0xffd166)
+    });
+  }
 
 
   setDebugMode(mode = 0) {
