@@ -14,10 +14,6 @@
 //   - Billboard in camera space (Right/Up della camera passati come uniform)
 //   - Fog “manuale” nel fragment (Exp2) per evitare incompatibilità con fog built-in
 //   - Blending Additive, depthTest on, depthWrite off
-//
-// NOTE: nessuna logica modificata rispetto alla tua versione. Solo refactor
-// cosmetico, JSDoc, naming coerente e commenti.
-//
 // -----------------------------------------------------------------------------
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';

@@ -2,11 +2,11 @@
 // -----------------------------------------------------------------------------
 // WASDController (stile FPS)
 // -----------------------------------------------------------------------------
-// • Gestisce yaw/pitch interni aggiornati dal mouse (pointer lock).
-// • Muove la camera sul piano XZ in funzione della direzione di sguardo reale.
-// • Tiene Y = ground(x,z) + eyeHeight (niente salti, niente gravità).
-// • Semplice modello di accelerazione + “friction” esponenziale quando rilasci.
-// • Nessuna dipendenza da OrbitControls.
+// - Gestisce yaw/pitch interni aggiornati dal mouse (pointer lock).
+// - Muove la camera sul piano XZ in funzione della direzione di sguardo reale.
+// - Tiene Y = ground(x,z) + eyeHeight (niente salti, niente gravità).
+// - Semplice modello di accelerazione + “friction” esponenziale quando rilasci.
+// - Nessuna dipendenza da OrbitControls.
 // -----------------------------------------------------------------------------
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';

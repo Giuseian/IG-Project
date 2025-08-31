@@ -6,12 +6,6 @@
 // (idle → armed → purifying → done), carica il modello FBX per ogni istanza,
 // aggiorna i materiali/emissive e, mentre purifichi, fornisce safe-zone al
 // resto del gioco (es. pausa aggro nello spawner).
-//
-// NOTE (pulizia):
-//  - API invariate.
-//  - JSDoc/typo fix/commenti esplicativi.
-//  - Evitate allocazioni inutili in update (riuso vettori).
-//  - cloneMaterialsPerMesh ora imposta needsUpdate correttamente anche con array.
 // -----------------------------------------------------------------------------
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';

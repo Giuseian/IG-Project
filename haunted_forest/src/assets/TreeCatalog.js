@@ -4,17 +4,14 @@
 // -----------------------------------------------------------------------------
 // Carica modelli .OBJ di alberi e produce "prototipi" pronti per l'instancing:
 //
-//  • Split per materiale (usando i groups della geometry).
-//  • Applica regole PBR per ottenere materiali coerenti.
-//  • Merge delle sub-geometry per materiale -> poche BufferGeometry finali.
-//  • Riallinea la base a y=0 e calcola un baseRadius (mezzo diametro XZ).
+//  - Split per materiale (usando i groups della geometry).
+//  - Applica regole PBR per ottenere materiali coerenti.
+//  - Merge delle sub-geometry per materiale -> poche BufferGeometry finali.
+//  - Riallinea la base a y=0 e calcola un baseRadius (mezzo diametro XZ).
 //
 // Output di load(name, url):
 //   { geometriesByMaterial: [{ geometry, material }, ...], baseRadius }
 // Questi prototipi vengono usati da ForestSystem per creare InstancedMesh.
-//
-// NOTE: nessun cambiamento di comportamento rispetto alla tua versione;
-//       soltanto refactor, commenti e piccola pulizia delle geometrie temporanee.
 // -----------------------------------------------------------------------------
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';

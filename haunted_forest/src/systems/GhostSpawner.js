@@ -3,8 +3,6 @@
 // Gestisce il pool dei fantasmi, lo spawn (anche in ondate), il despawn
 // intelligente (lontananza / alle spalle fuori schermo), e la “modalità difesa”
 // intorno ai totem (cap temporaneo e orbita).
-//
-// ⚠️ Pulizia soltanto: nessun refactor logico, nessun cambio di valori.
 // -----------------------------------------------------------------------------
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';

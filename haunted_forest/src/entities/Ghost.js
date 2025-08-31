@@ -4,14 +4,11 @@
 // diegetico a terra. È gestita dallo Spawner (GhostSpawner) che la carica,
 // la attiva, la aggiorna e la ricicla.
 //
-// • Stati: 'inactive' → 'appearing' → 'active' → 'cleansing' → 'inactive'
-// • Shader: patchGhostMaterial aggiunge dissolve + uniform set condivisi
-// • Ring diegetico: base tenue + arco a progresso (shader custom)
-// • Movimento: seek con turn-rate, swoop in quota, serpentina (weave)
-// • Pacificazione: in safe-zone i ghost restano alla periferia e rallentano
-//
-// NOTA: Questo file è stato pulito e documentato. Nessuna logica/comportamento
-//       è stato modificato.
+// - Stati: 'inactive' → 'appearing' → 'active' → 'cleansing' → 'inactive'
+// - Shader: patchGhostMaterial aggiunge dissolve + uniform set condivisi
+// - Ring diegetico: base tenue + arco a progresso (shader custom)
+// - Movimento: seek con turn-rate, swoop in quota, serpentina (weave)
+// - Pacificazione: in safe-zone i ghost restano alla periferia e rallentano
 // -----------------------------------------------------------------------------
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
@@ -161,7 +158,7 @@ function makeArcMaterial(outerR, innerR) {
     fragmentShader: frag,
     transparent: true,
     depthWrite: false,
-    blending: THREE.AdditiveBlending,
+    blending: THREE.AdditiveBlending,  // glow 
     fog: false,
     toneMapped: false
   });
@@ -228,20 +225,20 @@ export class Ghost {
   constructor(opts = {}) {
     // --- Caricamento / look ---
     this.url           = opts.url ?? '/assets/models/ghost/ghost.glb';
-    this.targetHeight  = opts.targetHeight ?? 2.2;
+    this.targetHeight  = opts.targetHeight ?? 2.2;  
     this.scaleJitter   = opts.scaleJitter ?? 0.28;
     this.opacityBody   = opts.opacityBody ?? 0.75;
 
     // --- Terreno e target ---
-    this.getGroundY = opts.getGroundY || ((x, z) => 0.0);
+    this.getGroundY = opts.getGroundY || ((x, z) => 0.0);   // Y del terreno
     this.getGroundNormal = opts.getGroundNormal || null;
     this.clearance  = (opts.clearance ?? 0.05);
     this.getTargetPos = opts.getTargetPos || null;
 
     // --- Gerarchia scene graph ---
-    this.root = new THREE.Group(); this.root.name = 'Ghost';
-    this.rig  = new THREE.Group(); this.rig.name  = 'GhostRig';
-    this.root.add(this.rig);
+    this.root = new THREE.Group(); this.root.name = 'Ghost';   // nodo mondo del fantasma - muove il fantasma nello spazio 
+    this.rig  = new THREE.Group(); this.rig.name  = 'GhostRig';  // figlio di root - fa le micro-oscillazioni
+    this.root.add(this.rig); 
     this.root.visible = false;
 
     this.model  = null;          // mesh/scene caricata
@@ -251,8 +248,8 @@ export class Ghost {
 
     // --- Idle pose (bob + sway) ---
     this.idle = {
-      baseY: 0.45,
-      phase: Math.random() * Math.PI * 2,
+      baseY: 0.45,   // base dell'altalena verticale rispetto al suolo 
+      phase: Math.random() * Math.PI * 2,  
       ampBob: 0.06,
       omegaBob: 1.2,
       swayAmpX: THREE.MathUtils.degToRad(4),
@@ -267,15 +264,15 @@ export class Ghost {
     this.vel = new THREE.Vector3(0,0,0);
     this.yaw = 0;
     this.params = {
-      appearDuration:   1.0,
-      cleanseDuration:  0.8,
+      appearDuration:   1.0,   // tempo di fade-in
+      cleanseDuration:  0.8,   // tempo di dissolvenza 
       speed:            opts.speed ?? 6.0,
-      burstMultiplier:  opts.burstMultiplier ?? 1.6,
+      burstMultiplier:  opts.burstMultiplier ?? 1.6,   // moltiplicatore di velocità in burst
       yawRateDeg:       opts.yawRateDeg ?? 720,
       keepDistance:     opts.keepDistance ?? 0.0,
       arriveRadius:     opts.arriveRadius ?? 1.2,
       exposureFalloff:  0.6,
-      hardLockDist:     opts.hardLockDist ?? 60
+      hardLockDist:     opts.hardLockDist ?? 60   // soglia oltre la quale inseguimento più diretto 
     };
 
     // --- Swoop (quota) ---
@@ -438,6 +435,7 @@ export class Ghost {
 
     this._pacified = want;
 
+    // Registra la zona se è valida (copia il centro e memorizza il raggio), altrimenti null 
     if (this._pacified) {
       if (this._keepDistanceBase == null) this._keepDistanceBase = this.params.keepDistance;
       if (this._speedBase == null)        this._speedBase = this.params.speed;
@@ -451,11 +449,11 @@ export class Ghost {
         this._pacifyZone = null;
       }
 
-      const fallbackKeep = 100;
+      const fallbackKeep = 100;  // se non c’è zona valida
       const perimeter = this._pacifyZone ? this._pacifyZone.radius + 6.0 : fallbackKeep;
       this.params.keepDistance = Math.max(this._keepDistanceBase ?? 0, perimeter);
-      this.params.speed = Math.min(this._speedBase, this._speedBase * 0.6);
-    } else {
+      this.params.speed = Math.min(this._speedBase, this._speedBase * 0.6);   // riduce la velocità del ghost 
+    } else {  // disattiva pacificazione
       this._pacifyZone = null;
       if (this._keepDistanceBase != null) this.params.keepDistance = this._keepDistanceBase;
       if (this._speedBase != null)        this.params.speed        = this._speedBase;
@@ -503,6 +501,7 @@ export class Ghost {
 
   /* =================== Internals (state & movement) =================== */
 
+  // Stati Ghost 
   _enter(next) {
     this.state  = next;
     this.tState = 0;
@@ -526,7 +525,7 @@ export class Ghost {
       const yCanopy = gy + this.swoop.hHigh + jitter;
       if (!isNaN(yCanopy)) this.root.position.y = Math.max(this.root.position.y, yCanopy);
 
-      // Snap iniziale verso il target (evita esitazione al primo frame)
+      // Snap iniziale verso il target (evita esitazione al primo frame)  -> viene direttamente verso il target 
       const target = (typeof this.getTargetPos === 'function') ? this.getTargetPos() : null;
       if (target) {
         this._alignInstant(target);
@@ -566,17 +565,20 @@ export class Ghost {
     this.rig.rotation.y = this.yaw;
   }
 
+  // Materializzazione fantasma con dissolve morbido 
   _updateAppearing(dt) {
     const d = this.params.appearDuration || 1.0;
     const t = THREE.MathUtils.clamp(this.tState / d, 0, 1);
-    const k = t * t * (3 - 2 * t);
+    const k = t * t * (3 - 2 * t);   // Easing per partenza morbida 
     const thr = THREE.MathUtils.lerp(0.98, 0.25, k);
     this._setThreshold(thr);
     if (t >= 1 || thr <= 0.26) this.activate();
   }
 
+
+  // Muovere il ghost verso il bersaglio con velocità, svolta, serpentina, quota 
   _updateActive(dt) {
-    // Decadimento naturale dell’esposizione
+    // Decadimento naturale dell’esposizione, se il ghost non viene colpito con il raggio 
     if (this.exposure > 0) this.applyExposure(-this.params.exposureFalloff * dt);
 
     // Barriera se pacificato (non entra nel perimetro)
@@ -587,7 +589,7 @@ export class Ghost {
       const r  = Math.hypot(dx, dz);
       const minR = (this._pacifyZone.radius || 0) + 2.0;
       if (r < Math.max(0.01, minR)) {
-        const nx = dx / (r || 1e-6), nz = dz / (r || 1e-6);
+        const nx = dx / (r || 1e-6), nz = dz / (r || 1e-6);  
         const push = (minR - r);
         this.root.position.x += nx * push;
         this.root.position.z += nz * push;
@@ -665,7 +667,7 @@ export class Ghost {
       const kDist = THREE.MathUtils.clamp((dist - this.weave.fadeNear) / Math.max(1e-3, (this.weave.fadeFar - this.weave.fadeNear)), 0, 1);
       const kNear = THREE.MathUtils.clamp(desired / (arriveR * 1.5), 0, 1);
 
-      const A = this.weave.amp * kDist * kNear;
+      const A = this.weave.amp * kDist * kNear;   
       const s = Math.sin(this.weave.omega * this._time + this.weave.phase);
 
       const off = _tmpV.copy(_right).multiplyScalar(A * s);
@@ -787,17 +789,17 @@ export class Ghost {
     // Base tenue (con polygonOffset per evitare z-fighting)
     const baseGeo = new THREE.RingGeometry(r * 0.82, r * 1.00, 64);
     baseGeo.rotateX(-Math.PI/2);
-    const baseMat = new THREE.MeshBasicMaterial({
+    const baseMat = new THREE.MeshBasicMaterial({  // Creazione anello piatto forato 
       color: 0x99e6ff,
       transparent: true,
       opacity: 0.22,
       depthWrite: false,
-      depthTest: false,              // non testa contro la depth del terreno
-      blending: THREE.AdditiveBlending,
+      depthTest: false,              // non testa contro la depth del terreno per essere visibile 
+      blending: THREE.AdditiveBlending,   // bagliore soft 
       fog: false,
       toneMapped: false,
       polygonOffset: true,
-      polygonOffsetFactor: -1,
+      polygonOffsetFactor: -1,  // Negativo per evitare z-fighting con il terreno -> poligono visibile 
       polygonOffsetUnits: -1
     });
     const base = new THREE.Mesh(baseGeo, baseMat);
@@ -806,12 +808,13 @@ export class Ghost {
     // Arco shader (quad XZ, tagliato via shader a uProg)
     const arcGeo = new THREE.PlaneGeometry(2*r, 2*r);
     arcGeo.rotateX(-Math.PI/2);
-    const arcMat = makeArcMaterial(r * 1.00, r * 0.74);
+    const arcMat = makeArcMaterial(r * 1.00, r * 0.74);  // shader per mascherare la parte visibile 
     arcMat.depthWrite = false;
     arcMat.depthTest  = false;
-    const arc = new THREE.Mesh(arcGeo, arcMat);
+    const arc = new THREE.Mesh(arcGeo, arcMat);  
     arc.renderOrder = 1000;
 
+    // Grouping base+arco
     const g = new THREE.Group();
     g.add(base); g.add(arc);
     g.visible = false;
@@ -830,8 +833,8 @@ export class Ghost {
     // Posiziona pochi cm sopra il terreno locale della root
     const gx = this.root.position.x, gz = this.root.position.z;
     const gy = this.getGroundY(gx, gz);
-    R.group.position.set(0, (gy + 0.10) - this.root.position.y, 0);
-
+    R.group.position.set(0, (gy + 0.10) - this.root.position.y, 0);   // almeno 10 cm sopra il terreno locale 
+ 
     // Tilt opzionale con la normale del terreno
     if (typeof this.getGroundNormal === 'function') {
       const n = this.getGroundNormal(gx, gz) || _UP;
@@ -870,7 +873,7 @@ export class Ghost {
   // Wisps (effetti particellari) — variante attiva: guaina attorno al ghost
   // ---------------------------------------------------------------------------
 
-  // Variante "fire near ghost" (attiva)
+  // Variante "fire near ghost" (attiva) - Guaina cilindrica di particelle attorno al ghost 
   _emitWispHit(deltaExp){
     if (!window.wisps || deltaExp <= 0) return;
 
@@ -894,6 +897,7 @@ export class Ghost {
     const rad   = Math.max(0.35, (this._ring?.radius ?? 2.2) * 0.45);
     const count = Math.max(2, Math.floor(6 + 80 * deltaExp));
 
+    // Emissione 
     window.wisps.emitSheath(center, H, rad, count, {
       up: 1.2, out: 0.55, spread: 0.28,
       size: [0.6, 1.6],
@@ -902,6 +906,7 @@ export class Ghost {
     });
   }
 
+  // Esplosione sferica di particelle 
   _emitWispBurst(){
     if (!window.wisps) return;
 

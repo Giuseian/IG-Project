@@ -6,10 +6,7 @@
 // - queryNeighbors(x,z[,radiusCells=1]) ritorna gli indici nelle celle
 //   del vicinato (3x3 per default).
 // -----------------------------------------------------------------------------
-// NOTE:
-//  • Pensato per inserimenti "una tantum" e poi query (no update/move).
-//  • Per scene dinamiche, servirebbero remove/reinsert o una struttura diversa.
-// -----------------------------------------------------------------------------
+
 
 /**
  * Semplice griglia hash 2D per accelerare ricerche di vicinato su punti (x,z).

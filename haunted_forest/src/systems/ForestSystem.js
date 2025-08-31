@@ -8,10 +8,6 @@
 // - Multi–tipo: ogni tipo ha geometrie/materiali propri (instanced per mat)
 // - Occluders: per ogni albero produce un cilindro approssimante (pos/radius/height)
 // - Dimensionamento: spacing minimo base + "sizePad" ricavato dalla taglia media
-//
-// NOTE:
-//  • Nessuna modifica di comportamento rispetto al tuo codice: solo pulizia,
-//    commenti, typedefs e micro-rifiniture (nomi/guardie).
 // -----------------------------------------------------------------------------
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';

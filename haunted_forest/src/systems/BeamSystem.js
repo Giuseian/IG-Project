@@ -8,11 +8,6 @@
 //  • il calcolo di exposure sui Ghost entro un cono di metà-angolo e raggio max
 //  • l’overheat (salita/discesa calore, blocco temporaneo del firing)
 //  • un “focus” per HUD (ghost migliore del frame: weight/dist/exposure)
-//
-// NOTE:
-//  - Nessun cambiamento funzionale rispetto alla tua versione: solo pulizia,
-//    JSDoc, commenti e minimi riusi di vettori temporanei per evitare allocazioni.
-//  - L’API pubblica (metodi/nomi/proprietà) resta identica.
 // -----------------------------------------------------------------------------
 
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
